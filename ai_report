@@ -1,0 +1,23 @@
+
+## Summary of Memory Reduction Techniques Added
+
+1. **Mixed Precision Training/Inference**:
+   - Added support for PyTorch's automatic mixed precision (FP16) which typically reduces memory usage by up to 50%
+   - Automatically enabled when available, but configurable
+
+2. **Memory-Efficient Model Loading**:
+   - Added option to keep model on CPU and only move parts to GPU when needed
+   - Reduces overall GPU memory footprint, especially for larger models
+
+3. **Explicit Memory Management**:
+   - Added explicit calls to `torch.cuda.empty_cache()` after operations
+   - Added garbage collection to free unused memory
+   - Set PyTorch environment variable to avoid memory fragmentation: `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
+
+4. **Modular Processing**:
+   - Added `_clear_gpu_memory()` method to systematically clear GPU memory at specific points
+   - Modified `process_image()` and `combine_images()` methods to clear GPU memory between steps
+
+5. **Resource Cleanup**:
+   - Added a `cleanup()` method to free resources when done using the processor
+
