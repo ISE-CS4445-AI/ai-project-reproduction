@@ -1417,6 +1417,9 @@ class E4EProcessor:
             latent (torch.Tensor): Latent code
             edit_type (str): Type of edit ('interfacegan', 'ganspace', 'sefa')
             **kwargs: Additional arguments for the specific edit type
+                return_single_image (bool): If True, return only a single image instead of concatenated images
+                multi_directions (list): List of dictionaries containing direction_name and factor pairs
+                    e.g., [{'direction_name': 'age', 'factor': -3.0}, {'direction_name': 'smile', 'factor': 2.0}]
             
         Returns:
             PIL.Image: Edited image
@@ -1430,22 +1433,81 @@ class E4EProcessor:
         # Use a GPU memory-efficient approach
         use_memory_efficient = kwargs.get('use_memory_efficient', self.memory_efficient)
         
+        # Check if we should return a single image
+        return_single_image = kwargs.get('return_single_image', False)
+        
         # Set memory-efficient mode for the editor
         self.editor.set_memory_efficient(use_memory_efficient)
         
         try:
             # Apply the edit based on the edit type
             if edit_type == 'interfacegan':
-                direction_name = kwargs.get('direction_name', 'age')
-                factor = kwargs.get('factor', -3.0)
-                factor_range = kwargs.get('factor_range', None)
+                # Check if we're doing multiple direction edits
+                multi_directions = kwargs.get('multi_directions', None)
                 
-                logging.info(f"Applying interfacegan edit: {direction_name}, factor: {factor}")
-                
-                if factor_range is not None:
-                    edited_image = self.editor.apply_interfacegan_range(latent, direction_name, factor_range)
+                if multi_directions is not None and isinstance(multi_directions, list) and len(multi_directions) > 0:
+                    # Apply multiple edits sequentially
+                    logging.info(f"Applying multiple InterfaceGAN edits: {[d['direction_name'] for d in multi_directions]}")
+                    
+                    # Start with the original latent
+                    edited_latent = latent.clone()
+                    
+                    # Apply each direction sequentially
+                    for direction_info in multi_directions:
+                        direction_name = direction_info.get('direction_name')
+                        factor = direction_info.get('factor', 0.0)
+                        
+                        if not direction_name:
+                            continue
+                            
+                        logging.info(f"Applying {direction_name} edit with factor {factor}")
+                        
+                        # Get the direction tensor
+                        directions = self.editor.get_interfacegan_directions()
+                        if direction_name not in directions:
+                            logging.warning(f"Direction {direction_name} not found, skipping...")
+                            continue
+                            
+                        direction_path = directions[direction_name]
+                        direction_tensor = torch.load(direction_path, map_location=edited_latent.device)
+                        
+                        # Apply the edit to the latent
+                        edited_latent = edited_latent + factor * direction_tensor
+                    
+                    # Generate image from the final edited latent
+                    edited_image = self.combiner.generate_from_latent(edited_latent)
+                    
                 else:
-                    edited_image = self.editor.apply_interfacegan(latent, direction_name, factor)
+                    # Original single-direction code
+                    direction_name = kwargs.get('direction_name', 'age')
+                    factor = kwargs.get('factor', -3.0)
+                    factor_range = kwargs.get('factor_range', None)
+                    
+                    logging.info(f"Applying interfacegan edit: {direction_name}, factor: {factor}")
+                    
+                    if factor_range is not None:
+                        edited_images = self.editor.apply_interfacegan_range(latent, direction_name, factor_range)
+                        # If return_single_image is True, only return the first image
+                        if return_single_image and isinstance(edited_images, list) and len(edited_images) > 0:
+                            edited_image = edited_images[0]
+                        else:
+                            edited_image = edited_images
+                    else:
+                        # Apply the edit to get a concatenated image
+                        edited_image_concat = self.editor.apply_interfacegan(latent, direction_name, factor)
+                        
+                        # If we need a single image, generate it directly instead of using the concatenated version
+                        if return_single_image:
+                            # Apply the edit to the latent
+                            directions = self.editor.get_interfacegan_directions()
+                            direction_path = directions[direction_name]
+                            direction_tensor = torch.load(direction_path, map_location=latent.device)
+                            edited_latent = latent + factor * direction_tensor
+                            
+                            # Generate image directly from latent
+                            edited_image = self.combiner.generate_from_latent(edited_latent)
+                        else:
+                            edited_image = edited_image_concat
                 
                 # Clear GPU memory after editing
                 self._clear_gpu_memory()
@@ -1848,7 +1910,9 @@ if __name__ == "__main__":
             edit_type='interfacegan',
             direction_name='age',
             factor=-3,
-            use_memory_efficient=True  # Use memory-efficient mode for editing
+            use_memory_efficient=True,  # Use memory-efficient mode for editing
+            return_single_image=True,    # Get just one image instead of 18 concatenated images
+            multi_directions=[{'direction_name': 'age', 'factor': -3.0}]
         )
         
         edited_path = os.path.join(output_dir, f'edited_{timestamp}.jpg')
