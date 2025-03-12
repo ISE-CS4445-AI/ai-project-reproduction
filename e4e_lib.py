@@ -201,8 +201,8 @@ class E4EPreprocessor:
             sys.path.append(".")
             sys.path.append("..")
             
-            # Import alignment utils
-            from utils.alignment import align_face
+            # Import alignment utils from our standalone file
+            from face_alignment import align_face
             
             predictor = dlib.shape_predictor(predictor_path)
             aligned_image = align_face(filepath=image_path, predictor=predictor) 
