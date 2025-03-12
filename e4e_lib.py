@@ -534,10 +534,12 @@ class E4ELatentCombiner:
         
         Args:
             latents_list (list): List of latent codes
-            weights (list, optional): List of weights for each latent. Can be:
+            weights (list or torch.Tensor, optional): Weights for each latent. Can be:
                 - None: Equal weights for all latents
                 - List of scalars: One weight per latent (applied to entire latent)
                 - List of tensors: Each tensor has the same shape as the latent for per-dimension weighting
+                - Single tensor of shape [18, 512]: StyleGAN specific weighting tensor that will be 
+                  automatically converted to appropriate weights for each latent
             
         Returns:
             torch.Tensor: Combined latent code
@@ -549,7 +551,27 @@ class E4ELatentCombiner:
         latent_shape = latents_list[0].shape
         num_latents = len(latents_list)
         
-        if weights is None:
+        # Handle the case where weights is a single tensor for StyleGAN
+        if isinstance(weights, torch.Tensor) and weights.shape == latent_shape:
+            # This is a special case where a single StyleGAN weight tensor is provided
+            # We need to convert it to a list of weights for each latent
+            
+            # For the first latent, use the provided weights
+            # For all other latents, distribute the remaining weight (1.0 - weights)
+            stylegan_weights = []
+            stylegan_weights.append(weights)
+            
+            if num_latents > 1:
+                # Calculate remaining weight to be distributed among other latents
+                remaining_weight = 1.0 - weights
+                # Distribute evenly among remaining latents
+                remaining_per_latent = remaining_weight / (num_latents - 1)
+                
+                for _ in range(num_latents - 1):
+                    stylegan_weights.append(remaining_per_latent)
+                    
+            weights = stylegan_weights
+        elif weights is None:
             # Equal weights if not specified
             weights = [1.0 / num_latents] * num_latents
         
