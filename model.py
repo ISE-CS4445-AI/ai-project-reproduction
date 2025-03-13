@@ -349,7 +349,7 @@ class LatentWeightTrainer:
                 
                 if target_embedding is not None:
                     # Generate child image from predicted latent
-                    sample_latent = predicted_child_latent[i].cpu()
+                    sample_latent = predicted_child_latent[i]  # Keep on same device, don't use .cpu()
                     generated_image = self.processor.combiner.generate_from_latent(sample_latent)
                     
                     # Compute perceptual loss
@@ -416,7 +416,7 @@ class LatentWeightTrainer:
                     
                     if target_embedding is not None:
                         # Generate child image from predicted latent
-                        sample_latent = predicted_child_latent[i].cpu()
+                        sample_latent = predicted_child_latent[i]  # Keep on same device, don't use .cpu()
                         generated_image = self.processor.combiner.generate_from_latent(sample_latent)
                         
                         # Compute perceptual loss
@@ -554,7 +554,7 @@ class LatentWeightTrainer:
                 )
                 
                 # Generate image
-                result_image = self.processor.combiner.generate_from_latent(combined_latent.squeeze(0).cpu())
+                result_image = self.processor.combiner.generate_from_latent(combined_latent.squeeze(0))
                 
                 # Save result
                 result_path = os.path.join(viz_dir, f'sample_{i}_result.jpg')
@@ -732,9 +732,29 @@ class LatentWeightTrainer:
         # Generate child latent
         child_latent = self.generate_child_latent(father_latent, mother_latent)
         
-        # Move latent to CPU for inference
-        child_latent = child_latent.cpu()
-        
-        # Generate image from latent
-        result_image = self.processor.combiner.generate_from_latent(child_latent)
+        try:
+            # Try to generate image directly with latent on its current device
+            result_image = self.processor.combiner.generate_from_latent(child_latent)
+        except RuntimeError as e:
+            # If there's a device mismatch error, try with CPU tensor as fallback
+            if "must be a CUDA tensor" in str(e):
+                print("Warning: Generator requires CUDA tensors. Moving latent to CUDA...")
+                try:
+                    # Try moving to CUDA
+                    child_latent = child_latent.cuda()
+                    result_image = self.processor.combiner.generate_from_latent(child_latent)
+                except (RuntimeError, AttributeError):
+                    # If that fails, maybe the generator expects CPU tensors?
+                    print("Warning: Moving latent to CPU instead...")
+                    child_latent = child_latent.cpu()
+                    result_image = self.processor.combiner.generate_from_latent(child_latent)
+            elif "expected CPU tensor" in str(e):
+                # Generator might be on CPU instead of GPU
+                print("Warning: Generator requires CPU tensors. Moving latent to CPU...")
+                child_latent = child_latent.cpu()
+                result_image = self.processor.combiner.generate_from_latent(child_latent)
+            else:
+                # Some other error
+                raise e
+            
         return result_image
