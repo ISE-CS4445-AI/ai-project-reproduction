@@ -165,8 +165,8 @@ processor = E4EProcessor(
     max_batch_size=1
 )
 
-# Load pre-computed latent codes instead of processing images
-print("Loading pre-computed latent codes...")
+# Load pre-computed latent codes for parents (no need for child latents with the optimized model)
+print("Loading pre-computed parent latent codes...")
 father_latents = []
 mother_latents = []
 
@@ -208,10 +208,10 @@ father_latents = father_latents[:min_length]
 mother_latents = mother_latents[:min_length]
 child_images = child_images[:min_length]
 
-# Filter out any families with failed processing
+# Filter out any families with missing latent codes
 valid_indices = [i for i in range(len(father_latents))
                 if father_latents[i] is not None and mother_latents[i] is not None]
-print(f"Successfully loaded {len(valid_indices)} out of {len(father_latents)} latent pairs")
+print(f"Successfully loaded {len(valid_indices)} out of {len(father_latents)} parent latent pairs")
 
 # Update train and test indices to only include valid families
 train_indices = [i for i in train_indices if i < len(valid_indices) and i in valid_indices]
@@ -227,11 +227,11 @@ trainer = LatentWeightTrainer(
     save_dir='family_models'
 )
 
-# Train the model
+# Train the model using the optimized approach (no child latent extraction needed)
 model, history = trainer.train(
     father_latents=father_latents,
     mother_latents=mother_latents,
-    child_images=child_images,
+    child_images=child_images,  # Now used only for face embeddings, not latent extraction
     train_indices=train_indices,
     test_indices=test_indices,
     num_epochs=30,

@@ -12,22 +12,21 @@ from tqdm import tqdm
 from PIL import Image
 from differentiable_pipeline import DifferentiableFaceEncoder
 
-class FamilyLatentDataset(Dataset):
-    """Dataset for family latent codes (father, mother, child)"""
+class ParentLatentDataset(Dataset):
+    """Dataset for parent latent codes (father, mother)"""
     
-    def __init__(self, father_latents, mother_latents, child_latents, indices):
+    def __init__(self, father_latents, mother_latents, indices):
         """
         Initialize the dataset.
         
         Args:
             father_latents (list): List of father latent codes
             mother_latents (list): List of mother latent codes
-            child_latents (list): List of child latent codes
             indices (list): Indices to use from the latent lists
         """
         self.father_latents = [father_latents[i] for i in indices]
         self.mother_latents = [mother_latents[i] for i in indices]
-        self.child_latents = [child_latents[i] for i in indices]
+        self.indices = indices  # Store original indices for reference
         
     def __len__(self):
         return len(self.father_latents)
@@ -36,7 +35,7 @@ class FamilyLatentDataset(Dataset):
         return {
             'father_latent': self.father_latents[idx],
             'mother_latent': self.mother_latents[idx],
-            'child_latent': self.child_latents[idx]
+            'original_idx': self.indices[idx]  # Return original index for reference
         }
 
 class AdaptiveDimensionWeightModel(nn.Module):
@@ -218,30 +217,35 @@ class LatentWeightTrainer:
         # (1 - weights) is implicitly the weight for mother's contribution
         return father_latent * weights + mother_latent * (1 - weights)
     
-    def _get_face_embedding(self, image_path):
+    def extract_face_embeddings(self, image_paths):
         """
-        Extract face embedding from an image.
+        Extract face embeddings from a list of image paths.
         
         Args:
-            image_path (str): Path to the image
+            image_paths (list): List of image paths
             
         Returns:
-            torch.Tensor: Face embedding
+            list: List of face embeddings
         """
         self._initialize_face_encoder()
         
-        try:
-            # Load and process image
-            img = Image.open(image_path).convert('RGB')
-            img_tensor = self.face_encoder.preprocess(img).unsqueeze(0).to(self.device)
-            
-            # Extract embedding
-            with torch.no_grad():
-                embedding = self.face_encoder(img_tensor)
-            return embedding
-        except Exception as e:
-            print(f"Error extracting embedding from {image_path}: {e}")
-            return None
+        face_embeddings = []
+        
+        for i, image_path in enumerate(tqdm(image_paths, desc="Extracting face embeddings")):
+            try:
+                # Load and process image
+                img = Image.open(image_path).convert('RGB')
+                img_tensor = self.face_encoder.preprocess(img).unsqueeze(0).to(self.device)
+                
+                # Extract embedding
+                with torch.no_grad():
+                    embedding = self.face_encoder(img_tensor)
+                face_embeddings.append(embedding)
+            except Exception as e:
+                print(f"Error extracting embedding from {image_path}: {e}")
+                face_embeddings.append(None)
+                
+        return face_embeddings
     
     def _compute_face_similarity_loss(self, generated_image, target_embedding):
         """
@@ -266,56 +270,14 @@ class LatentWeightTrainer:
         # Return negative similarity as loss (lower is better)
         return -similarity
     
-    def process_child_images(self, child_images, child_latents=None):
-        """
-        Process child images to extract latent codes and face embeddings.
-        
-        Args:
-            child_images (list): List of child image paths
-            child_latents (list): Optional pre-computed child latents
-            
-        Returns:
-            tuple: (child_latents, child_embeddings)
-        """
-        if child_latents is None:
-            child_latents = []
-            
-        # Initialize face encoder for embeddings
-        self._initialize_face_encoder()
-        
-        # Process images to get latents and embeddings
-        child_embeddings = []
-        
-        for i, child_path in enumerate(tqdm(child_images, desc="Processing child images")):
-            try:
-                # Get latent code if not provided
-                if i >= len(child_latents) or child_latents[i] is None:
-                    _, child_latent, _ = self.processor.process_image(child_path)
-                    if i < len(child_latents):
-                        child_latents[i] = child_latent
-                    else:
-                        child_latents.append(child_latent)
-                
-                # Get face embedding for perceptual loss
-                embedding = self._get_face_embedding(child_path)
-                child_embeddings.append(embedding)
-            except Exception as e:
-                print(f"Error processing child image {child_path}: {e}")
-                if i >= len(child_latents):
-                    child_latents.append(None)
-                child_embeddings.append(None)
-                
-        return child_latents, child_embeddings
-    
-    def prepare_dataloaders(self, father_latents, mother_latents, child_latents, 
-                          train_indices, test_indices, batch_size=8):
+    def prepare_dataloaders(self, father_latents, mother_latents, 
+                           train_indices, test_indices, batch_size=8):
         """
         Prepare training and validation dataloaders.
         
         Args:
             father_latents (list): List of father latent codes
             mother_latents (list): List of mother latent codes
-            child_latents (list): List of child latent codes
             train_indices (list): Indices for training set
             test_indices (list): Indices for test set
             batch_size (int): Batch size for dataloaders
@@ -324,11 +286,11 @@ class LatentWeightTrainer:
             tuple: (train_dataloader, val_dataloader)
         """
         # Create datasets
-        train_dataset = FamilyLatentDataset(
-            father_latents, mother_latents, child_latents, train_indices
+        train_dataset = ParentLatentDataset(
+            father_latents, mother_latents, train_indices
         )
-        val_dataset = FamilyLatentDataset(
-            father_latents, mother_latents, child_latents, test_indices
+        val_dataset = ParentLatentDataset(
+            father_latents, mother_latents, test_indices
         )
         
         # Create dataloaders
@@ -341,26 +303,26 @@ class LatentWeightTrainer:
         
         return train_dataloader, val_dataloader
     
-    def train_epoch(self, dataloader, child_images, child_embeddings, indices):
+    def train_epoch(self, dataloader, child_embeddings):
         """
         Train for one epoch.
         
         Args:
             dataloader: DataLoader for training data
-            child_images: List of child image paths
             child_embeddings: List of pre-extracted child face embeddings
-            indices: Indices mapping dataloader items to original lists
             
         Returns:
             float: Average training loss for the epoch
         """
         self.model.train()
         total_loss = 0
+        valid_batches = 0
         
-        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Training")):
+        for batch in tqdm(dataloader, desc="Training"):
             # Get data and move to device
             father_latent = batch['father_latent'].to(self.device)
             mother_latent = batch['mother_latent'].to(self.device)
+            original_indices = batch['original_idx'].tolist()
             
             # Zero gradients
             self.optimizer.zero_grad()
@@ -375,11 +337,12 @@ class LatentWeightTrainer:
             
             # Calculate batch loss
             batch_loss = 0.0
+            valid_samples = 0
             
             # Process each sample in the batch
             for i in range(father_latent.size(0)):
                 # Get the original index for this sample
-                original_idx = indices[batch_idx * dataloader.batch_size + i]
+                original_idx = original_indices[i]
                 
                 # Get the target embedding
                 target_embedding = child_embeddings[original_idx]
@@ -392,40 +355,44 @@ class LatentWeightTrainer:
                     # Compute perceptual loss
                     sample_loss = self._compute_face_similarity_loss(generated_image, target_embedding)
                     batch_loss += sample_loss
+                    valid_samples += 1
             
             # Average loss over valid samples in batch
-            if batch_loss > 0:
-                batch_loss = batch_loss / father_latent.size(0)
+            if valid_samples > 0:
+                batch_loss = batch_loss / valid_samples
                 
                 # Backward pass and optimize
                 batch_loss.backward()
                 self.optimizer.step()
                 
                 total_loss += batch_loss.item()
+                valid_batches += 1
             
-        return total_loss / len(dataloader)
+        if valid_batches == 0:
+            return 0.0
+        return total_loss / valid_batches
     
-    def validate(self, dataloader, child_images, child_embeddings, indices):
+    def validate(self, dataloader, child_embeddings):
         """
         Validate the model.
         
         Args:
             dataloader: DataLoader for validation data
-            child_images: List of child image paths
             child_embeddings: List of pre-extracted child face embeddings
-            indices: Indices mapping dataloader items to original lists
             
         Returns:
             float: Average validation loss
         """
         self.model.eval()
         total_loss = 0
+        valid_batches = 0
         
         with torch.no_grad():
-            for batch_idx, batch in enumerate(tqdm(dataloader, desc="Validating")):
+            for batch in tqdm(dataloader, desc="Validating"):
                 # Get data and move to device
                 father_latent = batch['father_latent'].to(self.device)
                 mother_latent = batch['mother_latent'].to(self.device)
+                original_indices = batch['original_idx'].tolist()
                 
                 # Forward pass - get weights
                 weights = self.model(father_latent, mother_latent)
@@ -437,11 +404,12 @@ class LatentWeightTrainer:
                 
                 # Calculate batch loss
                 batch_loss = 0.0
+                valid_samples = 0
                 
                 # Process each sample in the batch
                 for i in range(father_latent.size(0)):
                     # Get the original index for this sample
-                    original_idx = indices[batch_idx * dataloader.batch_size + i]
+                    original_idx = original_indices[i]
                     
                     # Get the target embedding
                     target_embedding = child_embeddings[original_idx]
@@ -454,13 +422,17 @@ class LatentWeightTrainer:
                         # Compute perceptual loss
                         sample_loss = self._compute_face_similarity_loss(generated_image, target_embedding)
                         batch_loss += sample_loss
+                        valid_samples += 1
                 
                 # Average loss over valid samples in batch
-                if batch_loss > 0:
-                    batch_loss = batch_loss / father_latent.size(0)
+                if valid_samples > 0:
+                    batch_loss = batch_loss / valid_samples
                     total_loss += batch_loss.item()
+                    valid_batches += 1
                 
-        return total_loss / len(dataloader)
+        if valid_batches == 0:
+            return 0.0
+        return total_loss / valid_batches
     
     def train(self, father_latents, mother_latents, child_images, 
               train_indices, test_indices, num_epochs=30, batch_size=8):
@@ -479,16 +451,15 @@ class LatentWeightTrainer:
         Returns:
             tuple: (trained_model, training_history)
         """
-        print("Processing child images...")
-        child_latents, child_embeddings = self.process_child_images(child_images)
+        print("Extracting face embeddings from child images...")
+        child_embeddings = self.extract_face_embeddings(child_images)
         
-        # Filter out families with missing latents or embeddings
+        # Filter out families with missing data
         valid_indices = []
         for i in range(len(father_latents)):
-            if (father_latents[i] is not None and 
-                mother_latents[i] is not None and
-                child_latents[i] is not None and
-                child_embeddings[i] is not None):
+            if (i < len(father_latents) and father_latents[i] is not None and
+                i < len(mother_latents) and mother_latents[i] is not None and
+                i < len(child_embeddings) and child_embeddings[i] is not None):
                 valid_indices.append(i)
                 
         train_indices = [i for i in train_indices if i in valid_indices]
@@ -498,7 +469,7 @@ class LatentWeightTrainer:
         
         # Prepare dataloaders
         train_dataloader, val_dataloader = self.prepare_dataloaders(
-            father_latents, mother_latents, child_latents,
+            father_latents, mother_latents,
             train_indices, test_indices, batch_size
         )
         
@@ -508,11 +479,11 @@ class LatentWeightTrainer:
             start_time = time.time()
             
             # Train for one epoch
-            train_loss = self.train_epoch(train_dataloader, child_images, child_embeddings, train_indices)
+            train_loss = self.train_epoch(train_dataloader, child_embeddings)
             self.train_losses.append(train_loss)
             
             # Validate
-            val_loss = self.validate(val_dataloader, child_images, child_embeddings, test_indices)
+            val_loss = self.validate(val_dataloader, child_embeddings)
             self.val_losses.append(val_loss)
             
             # Update learning rate based on validation performance
