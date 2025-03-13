@@ -304,12 +304,13 @@ class LatentWeightTrainer:
         # (1 - weights) is implicitly the weight for mother's contribution
         return father_latent * weights + mother_latent * (1 - weights)
     
-    def extract_face_embeddings(self, image_paths):
+    def extract_face_embeddings(self, image_paths, save_path=None):
         """
-        Extract face embeddings from a list of image paths.
+        Extract face embeddings from a list of image paths and optionally save to a file.
         
         Args:
             image_paths (list): List of image paths
+            save_path (str, optional): Path to save the embeddings tensor
             
         Returns:
             list: List of face embeddings
@@ -317,6 +318,8 @@ class LatentWeightTrainer:
         self._initialize_face_encoder()
         
         face_embeddings = []
+        valid_embeddings = []  # List to track which embeddings are valid (not None)
+        valid_indices = []     # List to track original indices of valid embeddings
         
         for i, image_path in enumerate(tqdm(image_paths, desc="Extracting face embeddings")):
             try:
@@ -328,10 +331,30 @@ class LatentWeightTrainer:
                 with torch.no_grad():
                     embedding = self.face_encoder(img_tensor)
                 face_embeddings.append(embedding)
+                valid_embeddings.append(embedding)
+                valid_indices.append(i)
             except Exception as e:
                 print(f"Error extracting embedding from {image_path}: {e}")
                 face_embeddings.append(None)
-                
+        
+        # Save embeddings to file if path is provided
+        if save_path and valid_embeddings:
+            # Stack valid embeddings into a single tensor
+            stacked_embeddings = torch.cat(valid_embeddings, dim=0)
+            
+            # Create a dictionary with embeddings and their original indices
+            embeddings_data = {
+                'embeddings': stacked_embeddings,
+                'indices': valid_indices
+            }
+            
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            
+            # Save to file
+            torch.save(embeddings_data, save_path)
+            print(f"Saved {len(valid_embeddings)} child embeddings to {save_path}")
+            
         return face_embeddings
     
     def _compute_face_similarity_loss(self, generated_embedding, target_embedding):
@@ -583,7 +606,8 @@ class LatentWeightTrainer:
         return total_loss / valid_batches
     
     def train(self, father_latents, mother_latents, child_images, 
-              train_indices, test_indices, num_epochs=300, batch_size=8):
+              train_indices, test_indices, num_epochs=300, batch_size=8, 
+              embeddings_save_path=None, load_embeddings_from=None):
         """
         Train the model.
         
@@ -595,12 +619,32 @@ class LatentWeightTrainer:
             test_indices (list): Indices for test set
             num_epochs (int): Number of epochs to train for
             batch_size (int): Batch size for training
+            embeddings_save_path (str, optional): Path to save child embeddings
+            load_embeddings_from (str, optional): Path to load pre-computed child embeddings
             
         Returns:
             tuple: (trained_model, training_history)
         """
-        print("Extracting face embeddings from child images...")
-        child_embeddings = self.extract_face_embeddings(child_images)
+        # Handle child embeddings - either load from file or extract from images
+        if load_embeddings_from and os.path.exists(load_embeddings_from):
+            print(f"Loading pre-computed child embeddings from {load_embeddings_from}")
+            embeddings_data = torch.load(load_embeddings_from)
+            stacked_embeddings = embeddings_data['embeddings']
+            valid_indices = embeddings_data['indices']
+            
+            # Convert to list format expected by training code
+            child_embeddings = [None] * len(child_images)
+            for i, idx in enumerate(valid_indices):
+                if idx < len(child_embeddings):
+                    child_embeddings[idx] = stacked_embeddings[i].unsqueeze(0)
+            
+            print(f"Loaded {len(valid_indices)} child embeddings")
+        else:
+            print("Extracting face embeddings from child images...")
+            child_embeddings = self.extract_face_embeddings(
+                child_images, 
+                save_path=embeddings_save_path
+            )
         
         # Filter out families with missing data
         valid_indices = []

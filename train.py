@@ -75,6 +75,7 @@ CSV_PATH = "/content/drive/MyDrive/Child Generator/CSVs/checkpoint10.csv"  # Pat
 OUTPUT_DIR = '/content/images/outputs'  # Output directory for generated images
 E4E_BASE_DIR = './e4e'  # Base directory for E4E model
 LATENT_DIR = './latents'  # Directory containing pre-computed latent codes
+EMBEDDINGS_DIR = './embeddings'  # Directory for storing face embeddings
 
 # Check if the paths exist and provide warnings if they don't
 for path in [BASE_PATH, CSV_PATH]:
@@ -84,6 +85,7 @@ for path in [BASE_PATH, CSV_PATH]:
 # Create output directory
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs('family_models', exist_ok=True)
+os.makedirs(EMBEDDINGS_DIR, exist_ok=True)
 
 # Load all family data
 print("Loading family data...")
@@ -235,7 +237,9 @@ model, history = trainer.train(
     train_indices=train_indices,
     test_indices=test_indices,
     num_epochs=30,
-    batch_size=8
+    batch_size=8,
+    embeddings_save_path=os.path.join(EMBEDDINGS_DIR, 'child_embeddings.pt'),
+    load_embeddings_from=os.path.join(EMBEDDINGS_DIR, 'child_embeddings.pt') if os.path.exists(os.path.join(EMBEDDINGS_DIR, 'child_embeddings.pt')) else None
 )
 
 # Use the trained model to generate a child image
