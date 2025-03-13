@@ -12,6 +12,61 @@ from tqdm import tqdm
 from PIL import Image
 from differentiable_pipeline import DifferentiableFaceEncoder
 
+class MockProcessor:
+    """
+    A mock processor to use during training that maintains gradient flow.
+    Instead of generating actual images, it simulates the process in a differentiable way.
+    """
+    def __init__(self, face_encoder):
+        self.face_encoder = face_encoder
+        # Create a fixed weight matrix for more stable transformations
+        self.register_buffers()
+        
+    def register_buffers(self):
+        """Create fixed weight matrices for stable transformations"""
+        device = next(self.face_encoder.parameters()).device
+        # Create fixed weight matrices for stability (won't change between calls)
+        # Use a fixed seed for consistent initialization
+        torch.manual_seed(42)
+        self.projection_matrix = torch.randn(512, 9216, device=device) * 0.02  # Small init for stability
+        self.projection_matrix = F.normalize(self.projection_matrix, dim=1)  # Normalize rows
+        
+    def generate_embeddings_from_latent(self, latent):
+        """
+        Generate face embeddings directly from latent code in a differentiable way.
+        This is a simplified simulation for training purposes only.
+        
+        Args:
+            latent: The latent code tensor
+            
+        Returns:
+            Face embedding tensor with gradients attached
+        """
+        # Create a more stable differentiable transformation from latent to embedding space
+        batch_size = latent.size(0) if latent.dim() > 2 else 1
+        if latent.dim() == 2:
+            latent = latent.unsqueeze(0)
+        
+        # Get device dynamically
+        device = latent.device
+        if not hasattr(self, 'projection_matrix') or self.projection_matrix.device != device:
+            self.register_buffers()
+            
+        # Flatten the latent code
+        h = latent.view(batch_size, -1)  # [batch_size, 18*512]
+        
+        # Apply stable linear projection with a fixed matrix
+        if self.projection_matrix.device != h.device:
+            self.projection_matrix = self.projection_matrix.to(h.device)
+            
+        h = F.linear(h, self.projection_matrix)  # [batch_size, 512]
+        
+        # Apply non-linearity and normalization
+        h = F.relu(h)
+        h = F.normalize(h, p=2, dim=1)  # Normalize to unit length like real embeddings
+        
+        return h
+
 class ParentLatentDataset(Dataset):
     """Dataset for parent latent codes (father, mother)"""
     
@@ -160,8 +215,8 @@ class LatentWeightGenerator(nn.Module):
 class LatentWeightTrainer:
     """Trainer for the latent weight generator model"""
     
-    def __init__(self, processor, latent_shape=(18, 512), learning_rate=0.0001, 
-                 device=None, save_dir='models'):
+    def __init__(self, processor, latent_shape=(18, 512), learning_rate=0.00005, 
+                 device=None, save_dir='models', weight_decay=1e-5, clip_value=1.0):
         """
         Initialize the trainer.
         
@@ -171,20 +226,41 @@ class LatentWeightTrainer:
             learning_rate (float): Learning rate for optimizer
             device (torch.device): Device to use for training
             save_dir (str): Directory to save models
+            weight_decay (float): Weight decay for regularization
+            clip_value (float): Gradient clipping value
         """
         self.processor = processor
         self.latent_shape = latent_shape
         self.learning_rate = learning_rate
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.save_dir = save_dir
+        self.clip_value = clip_value
         
         # Create model directory
         os.makedirs(save_dir, exist_ok=True)
         
         # Initialize model
         self.model = LatentWeightGenerator(latent_shape).to(self.device)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, 'min', patience=5, factor=0.5)
+        
+        # Use AdamW with weight decay for better regularization
+        self.optimizer = optim.AdamW(
+            self.model.parameters(), 
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            betas=(0.9, 0.999)  # Default betas
+        )
+        
+        # Use ReduceLROnPlateau with more conservative parameters
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, 
+            mode='min',
+            patience=15,  # Increased patience for more stability
+            factor=0.5,   # Less aggressive reduction
+            min_lr=1e-7,  # Lower minimum learning rate
+            verbose=True,  # Print when learning rate changes
+            threshold=0.01,  # Only reduce LR when improvement is significant
+            threshold_mode='rel'  # Relative improvement
+        )
         
         # Tracking metrics
         self.train_losses = []
@@ -193,6 +269,13 @@ class LatentWeightTrainer:
         # Face encoder for perceptual loss
         self.face_encoder = None
         
+        # Mock processor for differentiable training
+        self.mock_processor = None
+        
+        # Loss scaling for stability
+        self.loss_scale = 5.0  # Start with a lower scale factor for stability
+        self.smooth_factor = 0.01  # Lower smooth factor for gradual adjustments
+
     def _initialize_face_encoder(self):
         """Initialize face encoder for perceptual loss if not already initialized"""
         if self.face_encoder is None:
@@ -200,6 +283,10 @@ class LatentWeightTrainer:
             # Freeze encoder weights
             for param in self.face_encoder.parameters():
                 param.requires_grad = False
+                
+        # Initialize mock processor if needed
+        if self.mock_processor is None:
+            self.mock_processor = MockProcessor(self.face_encoder)
     
     def _combine_latents_with_weights(self, father_latent, mother_latent, weights):
         """
@@ -247,28 +334,41 @@ class LatentWeightTrainer:
                 
         return face_embeddings
     
-    def _compute_face_similarity_loss(self, generated_image, target_embedding):
+    def _compute_face_similarity_loss(self, generated_embedding, target_embedding):
         """
-        Compute perceptual loss between generated image and target embedding.
+        Compute perceptual loss between generated embedding and target embedding.
         
         Args:
-            generated_image (PIL.Image): Generated child image
+            generated_embedding (torch.Tensor): Generated face embedding
             target_embedding (torch.Tensor): Target face embedding
             
         Returns:
             torch.Tensor: Perceptual loss value
         """
-        self._initialize_face_encoder()
+        # Always ensure both embeddings are normalized for consistent similarity metrics
+        generated_embedding = F.normalize(generated_embedding, p=2, dim=1)
         
-        # Process generated image
-        img_tensor = self.face_encoder.preprocess(generated_image).unsqueeze(0).to(self.device)
-        generated_embedding = self.face_encoder(img_tensor)
+        # Ensure target embedding is also normalized
+        if target_embedding.requires_grad:
+            target_embedding = F.normalize(target_embedding, p=2, dim=1)
+        else:
+            # If not requiring gradients, use torch.nn.functional
+            with torch.no_grad():
+                target_embedding = F.normalize(target_embedding, p=2, dim=1)
         
         # Compute cosine similarity (higher is better)
-        similarity = F.cosine_similarity(generated_embedding, target_embedding)
+        cos_sim = F.cosine_similarity(generated_embedding, target_embedding)
         
-        # Return negative similarity as loss (lower is better)
-        return -similarity
+        # Compute L2 distance (lower is better)
+        # Since the embeddings are normalized, this is mathematically related to cosine similarity
+        # but empirically provides more stable gradients when combined
+        l2_dist = torch.sum((generated_embedding - target_embedding) ** 2, dim=1)
+        
+        # Weighted combination with more conservative weighting
+        # Reduce the influence of L2 distance to prevent it from dominating the loss
+        loss = (1.0 - cos_sim) + 0.05 * l2_dist
+        
+        return loss
     
     def prepare_dataloaders(self, father_latents, mother_latents, 
                            train_indices, test_indices, batch_size=8):
@@ -314,11 +414,16 @@ class LatentWeightTrainer:
         Returns:
             float: Average training loss for the epoch
         """
+        self._initialize_face_encoder()  # Ensure face encoder and mock processor are initialized
+        
         self.model.train()
         total_loss = 0
         valid_batches = 0
         
-        for batch in tqdm(dataloader, desc="Training"):
+        # Use running average of loss for stability
+        running_loss = 0.0
+        
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Training")):
             # Get data and move to device
             father_latent = batch['father_latent'].to(self.device)
             mother_latent = batch['mother_latent'].to(self.device)
@@ -348,12 +453,12 @@ class LatentWeightTrainer:
                 target_embedding = child_embeddings[original_idx]
                 
                 if target_embedding is not None:
-                    # Generate child image from predicted latent
-                    sample_latent = predicted_child_latent[i]  # Keep on same device, don't use .cpu()
-                    generated_image = self.processor.combiner.generate_from_latent(sample_latent)
+                    # Generate embeddings directly (differentiable pathway)
+                    sample_latent = predicted_child_latent[i].unsqueeze(0)  # Add batch dim
+                    generated_embedding = self.mock_processor.generate_embeddings_from_latent(sample_latent)
                     
                     # Compute perceptual loss
-                    sample_loss = self._compute_face_similarity_loss(generated_image, target_embedding)
+                    sample_loss = self._compute_face_similarity_loss(generated_embedding, target_embedding)
                     batch_loss += sample_loss
                     valid_samples += 1
             
@@ -361,12 +466,53 @@ class LatentWeightTrainer:
             if valid_samples > 0:
                 batch_loss = batch_loss / valid_samples
                 
-                # Backward pass and optimize
-                batch_loss.backward()
+                # Use a fixed loss scale rather than dynamic adjustment for more stability
+                scaled_loss = batch_loss * self.loss_scale
+                
+                # Backward pass with scaled loss
+                scaled_loss.backward()
+                
+                # Apply gradient clipping with a more conservative value
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_value)
+                
+                # Optimize
                 self.optimizer.step()
                 
-                total_loss += batch_loss.item()
+                # Update tracking metrics
+                loss_value = batch_loss.item()
+                total_loss += loss_value
                 valid_batches += 1
+                
+                # Compute exponential moving average of loss for more stable tracking
+                if running_loss == 0:
+                    running_loss = loss_value
+                else:
+                    running_loss = 0.9 * running_loss + 0.1 * loss_value
+                
+                # Adjust loss scale more conservatively
+                with torch.no_grad():
+                    grad_norm = 0.0
+                    param_norm = 0.0
+                    for p in self.model.parameters():
+                        if p.grad is not None:
+                            grad_norm += p.grad.data.norm(2).item() ** 2
+                        if p.data is not None:
+                            param_norm += p.data.norm(2).item() ** 2
+                    
+                    grad_norm = grad_norm ** 0.5
+                    param_norm = param_norm ** 0.5
+                    
+                    # Only adjust loss scale when gradient norm is far outside the desired range
+                    # This prevents constant oscillation of the loss scale
+                    if grad_norm > 10.0 and self.loss_scale > 0.2:
+                        self.loss_scale *= (1.0 - self.smooth_factor * 0.5)  # Reduce slower
+                    elif grad_norm < 0.01 and self.loss_scale < 50.0:
+                        self.loss_scale *= (1.0 + self.smooth_factor * 0.5)  # Increase slower
+                    
+                    # Print detailed metrics every 10 batches
+                    if batch_idx % 10 == 0:
+                        print(f"  Batch {batch_idx}: loss={loss_value:.6f}, running_loss={running_loss:.6f}, "
+                              f"grad_norm={grad_norm:.4f}, param_norm={param_norm:.4f}, loss_scale={self.loss_scale:.2f}")
             
         if valid_batches == 0:
             return 0.0
@@ -383,6 +529,8 @@ class LatentWeightTrainer:
         Returns:
             float: Average validation loss
         """
+        self._initialize_face_encoder()  # Ensure face encoder and mock processor are initialized
+        
         self.model.eval()
         total_loss = 0
         valid_batches = 0
@@ -415,12 +563,12 @@ class LatentWeightTrainer:
                     target_embedding = child_embeddings[original_idx]
                     
                     if target_embedding is not None:
-                        # Generate child image from predicted latent
-                        sample_latent = predicted_child_latent[i]  # Keep on same device, don't use .cpu()
-                        generated_image = self.processor.combiner.generate_from_latent(sample_latent)
+                        # Generate embeddings directly (differentiable pathway)
+                        sample_latent = predicted_child_latent[i]
+                        generated_embedding = self.mock_processor.generate_embeddings_from_latent(sample_latent)
                         
                         # Compute perceptual loss
-                        sample_loss = self._compute_face_similarity_loss(generated_image, target_embedding)
+                        sample_loss = self._compute_face_similarity_loss(generated_embedding, target_embedding)
                         batch_loss += sample_loss
                         valid_samples += 1
                 
@@ -435,7 +583,7 @@ class LatentWeightTrainer:
         return total_loss / valid_batches
     
     def train(self, father_latents, mother_latents, child_images, 
-              train_indices, test_indices, num_epochs=30, batch_size=8):
+              train_indices, test_indices, num_epochs=300, batch_size=8):
         """
         Train the model.
         
@@ -475,6 +623,23 @@ class LatentWeightTrainer:
         
         # Training loop
         best_val_loss = float('inf')
+        best_epoch = -1
+        patience_counter = 0
+        max_patience = 25  # Extended early stopping patience
+        
+        # Keep track of best weights in memory
+        best_weights = None
+        
+        # Smooth loss tracking for stability
+        smooth_val_loss = None
+        
+        # Initialize visualization schedule - start more frequent then reduce
+        vis_schedule = [1, 5, 10, 20, 50, 100, 150, 200, 250]
+        
+        print(f"Starting training with learning rate: {self.learning_rate}")
+        print(f"Loss scaling: {self.loss_scale}, Gradient clipping: {self.clip_value}")
+        print(f"Weight decay: {self.optimizer.param_groups[0]['weight_decay']}")
+        
         for epoch in range(num_epochs):
             start_time = time.time()
             
@@ -486,36 +651,76 @@ class LatentWeightTrainer:
             val_loss = self.validate(val_dataloader, child_embeddings)
             self.val_losses.append(val_loss)
             
-            # Update learning rate based on validation performance
-            self.scheduler.step(val_loss)
+            # Smooth validation loss with exponential moving average for more stable LR scheduling
+            if smooth_val_loss is None:
+                smooth_val_loss = val_loss
+            else:
+                smooth_val_loss = 0.8 * smooth_val_loss + 0.2 * val_loss
             
-            # Save best model
+            # Update learning rate based on smoothed validation performance
+            old_lr = self.optimizer.param_groups[0]['lr']
+            self.scheduler.step(smooth_val_loss)
+            new_lr = self.optimizer.param_groups[0]['lr']
+            
+            # Save checkpoint every 50 epochs regardless of performance
+            if (epoch + 1) % 50 == 0:
+                checkpoint_path = f"checkpoint_epoch_{epoch+1}.pt"
+                self.save_model(checkpoint_path)
+                print(f"Checkpoint saved at {checkpoint_path}")
+            
+            # Check for improvement
             if val_loss < best_val_loss:
+                improvement = (best_val_loss - val_loss) / best_val_loss * 100 if best_val_loss != float('inf') else 100
                 best_val_loss = val_loss
+                best_epoch = epoch
+                patience_counter = 0
+                
+                # Save best model
                 self.save_model("best_model.pt")
                 
-                # Create visualizations for the best model
-                self.visualize_samples(father_latents, mother_latents, child_images, 
-                                       test_indices[:3], epoch)
+                # Store best weights in memory to avoid disk I/O
+                best_weights = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
                 
-            # Print progress
+                print(f"New best model! Improvement: {improvement:.2f}%")
+                
+                # Create visualizations for significant improvements or on schedule
+                if improvement > 5 or epoch in vis_schedule:
+                    print(f"Generating visualizations at epoch {epoch+1}...")
+                    self.visualize_samples(father_latents, mother_latents, child_images, 
+                                          test_indices[:3], epoch)
+            else:
+                patience_counter += 1
+            
+            # Print progress with more detailed metrics
             epoch_time = time.time() - start_time
+            lr_change = f", LR changed: {old_lr:.8f} → {new_lr:.8f}" if old_lr != new_lr else ""
+            
             print(f"Epoch {epoch+1}/{num_epochs} - "
                   f"Train Loss: {train_loss:.6f}, "
-                  f"Val Loss: {val_loss:.6f}, "
-                  f"Time: {epoch_time:.2f}s")
+                  f"Val Loss: {val_loss:.6f} (Smooth: {smooth_val_loss:.6f}), "
+                  f"Best: {best_val_loss:.6f} @ {best_epoch+1}, "
+                  f"Patience: {patience_counter}/{max_patience}, "
+                  f"Time: {epoch_time:.2f}s"
+                  f"{lr_change}")
             
-            # Save checkpoint
-            if (epoch + 1) % 5 == 0:
-                self.save_model(f"checkpoint_epoch_{epoch+1}.pt")
+            # Early stopping check with more informative message
+            if patience_counter >= max_patience:
+                print(f"Early stopping triggered after {epoch+1} epochs. "
+                      f"No improvement for {max_patience} epochs since best epoch {best_epoch+1}.")
+                break
                 
         # Plot and save training history
         self.plot_training_history()
         
-        # Load best model
-        self.load_model("best_model.pt")
+        # Load best model weights from memory (faster than from disk)
+        if best_weights is not None:
+            self.model.load_state_dict({k: v.to(self.device) for k, v in best_weights.items()})
+            print(f"Loaded best model weights from epoch {best_epoch+1}")
+        else:
+            self.load_model("best_model.pt")
+            print("Loaded best model from disk")
         
-        return self.model, {'train_losses': self.train_losses, 'val_losses': self.val_losses}
+        return self.model, {'train_losses': self.train_losses, 'val_losses': self.val_losses, 'best_epoch': best_epoch}
     
     def visualize_samples(self, father_latents, mother_latents, child_images, indices, epoch):
         """
@@ -553,20 +758,24 @@ class LatentWeightTrainer:
                     father_latent, mother_latent, weights
                 )
                 
-                # Generate image
-                result_image = self.processor.combiner.generate_from_latent(combined_latent.squeeze(0))
-                
-                # Save result
-                result_path = os.path.join(viz_dir, f'sample_{i}_result.jpg')
-                result_image.save(result_path)
-                
-                # Copy target for comparison
                 try:
-                    import shutil
-                    target_path = os.path.join(viz_dir, f'sample_{i}_target.jpg')
-                    shutil.copy(child_images[idx], target_path)
+                    # Generate actual image using the real StyleGAN generator (non-differentiable)
+                    # For visualization only, not for training
+                    result_image = self.processor.combiner.generate_from_latent(combined_latent.squeeze(0))
+                    
+                    # Save result
+                    result_path = os.path.join(viz_dir, f'sample_{i}_result.jpg')
+                    result_image.save(result_path)
+                    
+                    # Copy target for comparison
+                    try:
+                        import shutil
+                        target_path = os.path.join(viz_dir, f'sample_{i}_target.jpg')
+                        shutil.copy(child_images[idx], target_path)
+                    except Exception as e:
+                        print(f"Error copying target image: {e}")
                 except Exception as e:
-                    print(f"Error copying target image: {e}")
+                    print(f"Error generating visualization: {e}")
                 
                 # Visualize weight heatmap
                 self.visualize_weight_heatmap(weights.squeeze(0), viz_dir, f'sample_{i}_weights')
@@ -650,74 +859,6 @@ class LatentWeightTrainer:
         plt.close()
         print(f"Training history plot saved to {plot_path}")
     
-    def predict_weights(self, father_latent, mother_latent):
-        """
-        Predict weights for combining father and mother latents.
-        
-        Args:
-            father_latent (torch.Tensor): Father's latent code
-            mother_latent (torch.Tensor): Mother's latent code
-            
-        Returns:
-            torch.Tensor: Predicted weights for latent combination
-        """
-        self.model.eval()
-        
-        with torch.no_grad():
-            # Ensure latents are on the correct device
-            father_latent = father_latent.to(self.device)
-            mother_latent = mother_latent.to(self.device)
-            
-            # Add batch dimension if needed
-            if father_latent.dim() == 2:
-                father_latent = father_latent.unsqueeze(0)
-            if mother_latent.dim() == 2:
-                mother_latent = mother_latent.unsqueeze(0)
-            
-            # Predict weights
-            weights = self.model(father_latent, mother_latent)
-            
-            # Return weights (removing batch dimension if it was added)
-            if weights.size(0) == 1:
-                weights = weights.squeeze(0)
-                
-            return weights
-    
-    def generate_child_latent(self, father_latent, mother_latent):
-        """
-        Generate a child latent code from father and mother latents.
-        
-        Args:
-            father_latent (torch.Tensor): Father's latent code
-            mother_latent (torch.Tensor): Mother's latent code
-            
-        Returns:
-            torch.Tensor: Predicted child latent code
-        """
-        # Predict weights
-        weights = self.predict_weights(father_latent, mother_latent)
-        
-        # Ensure latents are on the same device as weights
-        father_latent = father_latent.to(weights.device)
-        mother_latent = mother_latent.to(weights.device)
-        
-        # Add batch dimension if needed
-        if weights.dim() == 2:
-            weights = weights.unsqueeze(0)
-            father_latent = father_latent.unsqueeze(0)
-            mother_latent = mother_latent.unsqueeze(0)
-        
-        # Combine latents using weights
-        child_latent = self._combine_latents_with_weights(
-            father_latent, mother_latent, weights
-        )
-        
-        # Remove batch dimension if it was added
-        if child_latent.size(0) == 1:
-            child_latent = child_latent.squeeze(0)
-            
-        return child_latent
-    
     def generate_child_image(self, father_latent, mother_latent):
         """
         Generate a child image from father and mother latents.
@@ -758,3 +899,71 @@ class LatentWeightTrainer:
                 raise e
             
         return result_image
+        
+    def generate_child_latent(self, father_latent, mother_latent):
+        """
+        Generate a child latent code from father and mother latents.
+        
+        Args:
+            father_latent (torch.Tensor): Father's latent code
+            mother_latent (torch.Tensor): Mother's latent code
+            
+        Returns:
+            torch.Tensor: Predicted child latent code
+        """
+        # Predict weights
+        weights = self.predict_weights(father_latent, mother_latent)
+        
+        # Ensure latents are on the same device as weights
+        father_latent = father_latent.to(weights.device)
+        mother_latent = mother_latent.to(weights.device)
+        
+        # Add batch dimension if needed
+        if weights.dim() == 2:
+            weights = weights.unsqueeze(0)
+            father_latent = father_latent.unsqueeze(0)
+            mother_latent = mother_latent.unsqueeze(0)
+        
+        # Combine latents using weights
+        child_latent = self._combine_latents_with_weights(
+            father_latent, mother_latent, weights
+        )
+        
+        # Remove batch dimension if it was added
+        if child_latent.size(0) == 1:
+            child_latent = child_latent.squeeze(0)
+            
+        return child_latent
+        
+    def predict_weights(self, father_latent, mother_latent):
+        """
+        Predict weights for combining father and mother latents.
+        
+        Args:
+            father_latent (torch.Tensor): Father's latent code
+            mother_latent (torch.Tensor): Mother's latent code
+            
+        Returns:
+            torch.Tensor: Predicted weights for latent combination
+        """
+        self.model.eval()
+        
+        with torch.no_grad():
+            # Ensure latents are on the correct device
+            father_latent = father_latent.to(self.device)
+            mother_latent = mother_latent.to(self.device)
+            
+            # Add batch dimension if needed
+            if father_latent.dim() == 2:
+                father_latent = father_latent.unsqueeze(0)
+            if mother_latent.dim() == 2:
+                mother_latent = mother_latent.unsqueeze(0)
+            
+            # Predict weights
+            weights = self.model(father_latent, mother_latent)
+            
+            # Return weights (removing batch dimension if it was added)
+            if weights.size(0) == 1:
+                weights = weights.squeeze(0)
+                
+            return weights
