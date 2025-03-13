@@ -74,6 +74,7 @@ BASE_PATH = "/content/drive/MyDrive/Child Generator/AlignedTest2"  # Base path f
 CSV_PATH = "/content/drive/MyDrive/Child Generator/CSVs/checkpoint10.csv"  # Path to family data CSV
 OUTPUT_DIR = '/content/images/outputs'  # Output directory for generated images
 E4E_BASE_DIR = './e4e'  # Base directory for E4E model
+LATENT_DIR = './latents'  # Directory containing pre-computed latent codes
 
 # Check if the paths exist and provide warnings if they don't
 for path in [BASE_PATH, CSV_PATH]:
@@ -164,38 +165,57 @@ processor = E4EProcessor(
     max_batch_size=1
 )
 
-# Process all images to get latent codes
-print("Processing all images to extract latent codes...")
+# Load pre-computed latent codes instead of processing images
+print("Loading pre-computed latent codes...")
 father_latents = []
 mother_latents = []
 
-for i, (father_path, mother_path) in enumerate(zip(father_images, mother_images)):
-    print(f"Processing family {i+1}/{len(father_images)}...")
+# Check if the latent directory exists
+if not os.path.exists(LATENT_DIR):
+    print(f"WARNING: Latent directory '{LATENT_DIR}' does not exist. Please check the path.")
+    exit(1)
 
-    # Process father image
+# Count the number of available latent pairs
+num_latent_pairs = 0
+while os.path.exists(os.path.join(LATENT_DIR, f'father_latent_{num_latent_pairs}.pt')) and \
+      os.path.exists(os.path.join(LATENT_DIR, f'mother_latent_{num_latent_pairs}.pt')):
+    num_latent_pairs += 1
+
+print(f"Found {num_latent_pairs} latent pairs in {LATENT_DIR}")
+
+# Load the latent codes
+for i in range(num_latent_pairs):
+    father_latent_path = os.path.join(LATENT_DIR, f'father_latent_{i}.pt')
+    mother_latent_path = os.path.join(LATENT_DIR, f'mother_latent_{i}.pt')
+    
     try:
-        _, father_latent, _ = processor.process_image(father_path)
+        father_latent = torch.load(father_latent_path)
         father_latents.append(father_latent)
     except Exception as e:
-        print(f"Error processing father image {father_path}: {e}")
+        print(f"Error loading father latent {father_latent_path}: {e}")
         father_latents.append(None)
-
-    # Process mother image
+        
     try:
-        _, mother_latent, _ = processor.process_image(mother_path)
+        mother_latent = torch.load(mother_latent_path)
         mother_latents.append(mother_latent)
     except Exception as e:
-        print(f"Error processing mother image {mother_path}: {e}")
+        print(f"Error loading mother latent {mother_latent_path}: {e}")
         mother_latents.append(None)
 
+# Adjust if we have more latent codes than images or vice versa
+min_length = min(len(father_latents), len(mother_latents), len(child_images))
+father_latents = father_latents[:min_length]
+mother_latents = mother_latents[:min_length]
+child_images = child_images[:min_length]
+
 # Filter out any families with failed processing
-valid_indices = [i for i in range(len(father_images))
+valid_indices = [i for i in range(len(father_latents))
                 if father_latents[i] is not None and mother_latents[i] is not None]
-print(f"Successfully processed {len(valid_indices)} out of {len(father_images)} families")
+print(f"Successfully loaded {len(valid_indices)} out of {len(father_latents)} latent pairs")
 
 # Update train and test indices to only include valid families
-train_indices = [i for i in train_indices if i in valid_indices]
-test_indices = [i for i in test_indices if i in valid_indices]
+train_indices = [i for i in train_indices if i < len(valid_indices) and i in valid_indices]
+test_indices = [i for i in test_indices if i < len(valid_indices) and i in valid_indices]
 
 print(f"After filtering: Training on {len(train_indices)} families, testing on {len(test_indices)} families")
 
