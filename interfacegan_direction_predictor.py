@@ -128,35 +128,64 @@ class InterfaceGANTrainer:
                 # Forward pass
                 factors = self.model(father_latent, mother_latent)
                 
-                # Apply edits using apply_interfacegan
-                edited_latents = []
-                for i, direction_name in enumerate(self.model.direction_names):
-                    edited_latent = self.processor.editor.apply_interfacegan(
-                        father_latent, direction_name, factor=factors[:, i]
-                    )
-                    edited_latents.append(edited_latent)
+                # Process each sample in the batch individually
+                batch_size = father_latent.size(0)
                 
-                # Compute loss (example: perceptual loss between edited and target embeddings)
-                # This part will depend on your specific loss function and target data
-                # loss = ...
+                # Initialize loss (if you implement it)
+                batch_loss = 0.0
                 
-                # Backward pass
-                # loss.backward()
+                for b in range(batch_size):
+                    # Get individual latents
+                    sample_father_latent = father_latent[b:b+1]  # Keep batch dimension
+                    
+                    # Apply edits for this sample
+                    edited_latent = sample_father_latent.clone()
+                    
+                    for i, direction_name in enumerate(self.model.direction_names):
+                        # Extract the scalar factor for this sample and direction
+                        factor_value = factors[b, i].item()  # Convert to Python scalar
+                        
+                        try:
+                            # Apply the edit with the scalar factor
+                            edited_latent = self.processor.editor.apply_interfacegan(
+                                edited_latent, direction_name, factor=factor_value
+                            )
+                        except Exception as e:
+                            print(f"Error applying edit {direction_name} with factor {factor_value}: {e}")
+                            # Continue with the current edited_latent without applying this edit
+                    
+                    # Here you would compute the loss for this sample and add to batch_loss
+                    # For example:
+                    # sample_loss = compute_loss(edited_latent, target)
+                    # batch_loss += sample_loss
                 
-                # Clip gradients
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_value)
+                # If you have implemented batch_loss calculation, uncomment these lines:
+                # # Normalize batch loss
+                # batch_loss = batch_loss / batch_size
+                # 
+                # # Backward pass
+                # batch_loss.backward()
+                # 
+                # # Clip gradients
+                # torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_value)
+                # 
+                # # Optimize
+                # self.optimizer.step()
+                # 
+                # # Update total loss
+                # total_loss += batch_loss.item()
                 
-                # Optimize
-                self.optimizer.step()
-                
-                # Update total loss
-                # total_loss += loss.item()
+                # For now, just print progress without actual training
+                print(f"Processed batch with {batch_size} samples. Factors shape: {factors.shape}")
             
-            # Scheduler step
+            # Scheduler step (if loss calculation is implemented)
             # self.scheduler.step(total_loss)
             
             # Print epoch summary
             print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss}")
+            
+            # Save model after each epoch
+            self.save_model(f"checkpoint_epoch_{epoch+1}.pt")
         
     def save_model(self, filename):
         save_path = os.path.join(self.save_dir, filename)
