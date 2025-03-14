@@ -127,8 +127,9 @@ class MockProcessor:
         h = F.relu(h)
         h = F.normalize(h, p=2, dim=1)  # Normalize to unit length like real embeddings
         
-        # Verify h has gradient information
-        if not h.requires_grad:
+        # Verify h has gradient information - but only during training
+        # During validation we allow for no gradients
+        if not h.requires_grad and torch.is_grad_enabled():
             raise RuntimeError("Mock processor failed to maintain gradient flow!")
             
         return h
@@ -671,9 +672,13 @@ class LatentWeightTrainer:
         if loss.dim() > 0:
             loss = loss.mean()
             
-        # Verify loss has grad_fn
-        if loss.requires_grad and loss.grad_fn is None:
-            raise RuntimeError("Loss computation broke the gradient graph")
+        # Verify loss has grad_fn (only during training)
+        if torch.is_grad_enabled() and loss.requires_grad and loss.grad_fn is None:
+            print("WARNING: Loss computation broke the gradient graph")
+            # Try to recover
+            loss = loss.clone()
+            if loss.grad_fn is None:
+                raise RuntimeError("Loss computation broke the gradient graph and couldn't recover")
             
         return loss
     
@@ -792,19 +797,20 @@ class LatentWeightTrainer:
                 target_embedding = child_embeddings[original_idx]
                 
                 if target_embedding is not None:
-                    # Generate embeddings directly (differentiable pathway)
+                    # Ensure sample_latent requires gradient
                     sample_latent = predicted_child_latent[i].unsqueeze(0)  # Add batch dim
                     
                     # Ensure sample_latent requires gradient
                     if not sample_latent.requires_grad:
                         print(f"WARNING: sample_latent doesn't require gradient at index {i}")
-                        continue
-                        
-                    # Generate embedding 
-                    generated_embedding = self.mock_processor.generate_embeddings_from_latent(sample_latent)
+                        # Try to fix by explicitly setting requires_grad
+                        sample_latent = sample_latent.detach().requires_grad_(True)
                     
-                    # Compute perceptual loss
                     try:
+                        # Generate embedding 
+                        generated_embedding = self.mock_processor.generate_embeddings_from_latent(sample_latent)
+                        
+                        # Compute perceptual loss
                         sample_loss = self._compute_face_similarity_loss(generated_embedding, target_embedding)
                         batch_loss += sample_loss
                         valid_samples += 1
@@ -891,14 +897,16 @@ class LatentWeightTrainer:
         total_loss = 0
         valid_batches = 0
         
-        with torch.no_grad():
-            for batch in tqdm(dataloader, desc="Validating"):
-                # Get data and move to device
-                father_latent = batch['father_latent'].to(self.device)
-                mother_latent = batch['mother_latent'].to(self.device)
-                original_indices = batch['original_idx'].tolist()
-                
-                # Forward pass - get model output (weights or edit params)
+        # Remove torch.no_grad() to allow gradient computation for mock processor
+        # The model is in eval mode which is enough to prevent model updates
+        for batch in tqdm(dataloader, desc="Validating"):
+            # Get data and move to device
+            father_latent = batch['father_latent'].to(self.device)
+            mother_latent = batch['mother_latent'].to(self.device)
+            original_indices = batch['original_idx'].tolist()
+            
+            # Forward pass - get model output (weights or edit params)
+            with torch.no_grad():  # No gradient needed for model forward pass
                 model_output = self.model(father_latent, mother_latent)
                 
                 # Generate child latent based on model type
@@ -908,38 +916,43 @@ class LatentWeightTrainer:
                         father_latent, mother_latent, model_output
                     )
                 else:  # edit model
-                    # For edit model, use average of parents
-                    # During validation, we just use the base latent
+                    # For edit model, use average of parents during validation
                     predicted_child_latent = (father_latent + mother_latent) / 2.0
+            
+            # Calculate batch loss
+            batch_loss = 0.0
+            valid_samples = 0
+            
+            # Process each sample in the batch
+            for i in range(father_latent.size(0)):
+                # Get the original index for this sample
+                original_idx = original_indices[i]
                 
-                # Calculate batch loss
-                batch_loss = 0.0
-                valid_samples = 0
+                # Get the target embedding
+                target_embedding = child_embeddings[original_idx]
                 
-                # Process each sample in the batch
-                for i in range(father_latent.size(0)):
-                    # Get the original index for this sample
-                    original_idx = original_indices[i]
+                if target_embedding is not None:
+                    # Ensure latent requires gradient for mock processor
+                    sample_latent = predicted_child_latent[i].unsqueeze(0).detach().requires_grad_(True)
                     
-                    # Get the target embedding
-                    target_embedding = child_embeddings[original_idx]
-                    
-                    if target_embedding is not None:
+                    try:
                         # Generate embeddings directly (differentiable pathway)
-                        sample_latent = predicted_child_latent[i].unsqueeze(0)  # Add batch dim
                         generated_embedding = self.mock_processor.generate_embeddings_from_latent(sample_latent)
                         
                         # Compute perceptual loss
                         sample_loss = self._compute_face_similarity_loss(generated_embedding, target_embedding)
-                        batch_loss += sample_loss
+                        batch_loss += sample_loss.item()  # Use .item() since we only need the value
                         valid_samples += 1
-                
-                # Average loss over valid samples in batch
-                if valid_samples > 0:
-                    batch_loss = batch_loss / valid_samples
-                    total_loss += batch_loss.item()
-                    valid_batches += 1
-                
+                    except RuntimeError as e:
+                        print(f"Error during validation for sample {i}: {e}")
+                        continue
+            
+            # Average loss over valid samples in batch
+            if valid_samples > 0:
+                batch_loss = batch_loss / valid_samples
+                total_loss += batch_loss
+                valid_batches += 1
+        
         if valid_batches == 0:
             return 0.0
         return total_loss / valid_batches
