@@ -131,7 +131,7 @@ class InterfaceGANTrainer:
                 # Apply edits using apply_interfacegan
                 edited_latents = []
                 for i, direction_name in enumerate(self.model.direction_names):
-                    edited_latent = self.processor.apply_interfacegan(
+                    edited_latent = self.processor.editor.apply_interfacegan(
                         father_latent, direction_name, factor=factors[:, i]
                     )
                     edited_latents.append(edited_latent)
