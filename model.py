@@ -1122,10 +1122,23 @@ class LatentWeightTrainer:
             filename (str): Filename to save model to
         """
         save_path = os.path.join(self.save_dir, filename)
+        
+        # Prepare scheduler state dict with safety checks
+        scheduler_state = None
+        if self.scheduler:
+            try:
+                scheduler_state = self.scheduler.state_dict()
+                # For ReduceLROnPlateau ensure mode is valid
+                if hasattr(self.scheduler, 'mode') and not hasattr(scheduler_state, 'mode'):
+                    scheduler_state['mode'] = self.scheduler.mode
+            except Exception as e:
+                print(f"Warning: Could not save scheduler state: {e}")
+                print("Scheduler state will not be included in the checkpoint")
+        
         torch.save({
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
+            'scheduler_state_dict': scheduler_state,
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
             'latent_shape': self.latent_shape,
@@ -1162,8 +1175,17 @@ class LatentWeightTrainer:
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         
+        # Handle scheduler with try-except to make loading more robust
         if 'scheduler_state_dict' in checkpoint and checkpoint['scheduler_state_dict'] and self.scheduler:
-            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            try:
+                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                print("Scheduler state loaded successfully")
+            except (ValueError, KeyError, RuntimeError) as e:
+                print(f"Warning: Could not load scheduler state: {e}")
+                print("Initializing a new scheduler with default parameters")
+                
+                # Initialize a new scheduler with default parameters
+                self.initialize_new_scheduler()
             
         self.train_losses = checkpoint['train_losses']
         self.val_losses = checkpoint['val_losses']
@@ -1232,6 +1254,67 @@ class LatentWeightTrainer:
                 raise e
             
         return result_image
+
+    def initialize_new_scheduler(self, scheduler_type='plateau', **kwargs):
+        """
+        Initialize a new scheduler of the specified type.
+        
+        Args:
+            scheduler_type (str): Type of scheduler to initialize ('plateau', 'cosine', 'step', etc.)
+            **kwargs: Additional arguments for the scheduler
+            
+        Returns:
+            torch.optim.lr_scheduler: New scheduler instance
+        """
+        if scheduler_type == 'plateau':
+            # Default parameters for ReduceLROnPlateau
+            default_params = {
+                'mode': 'min',
+                'factor': 0.5,
+                'patience': 15,
+                'verbose': True,
+                'threshold': 0.01,
+                'threshold_mode': 'rel',
+                'min_lr': 1e-7
+            }
+            # Update with provided kwargs
+            default_params.update(kwargs)
+            
+            self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer, **default_params
+            )
+            
+        elif scheduler_type == 'cosine':
+            # Default parameters for CosineAnnealingLR
+            default_params = {
+                'T_max': 50,
+                'eta_min': 1e-7,
+                'verbose': True
+            }
+            default_params.update(kwargs)
+            
+            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, **default_params
+            )
+            
+        elif scheduler_type == 'step':
+            # Default parameters for StepLR
+            default_params = {
+                'step_size': 30,
+                'gamma': 0.1,
+                'verbose': True
+            }
+            default_params.update(kwargs)
+            
+            self.scheduler = optim.lr_scheduler.StepLR(
+                self.optimizer, **default_params
+            )
+            
+        else:
+            raise ValueError(f"Unknown scheduler type: {scheduler_type}")
+            
+        print(f"Initialized new {scheduler_type} scheduler with parameters: {kwargs}")
+        return self.scheduler
 
 class EditParamModel(nn.Module):
     """
