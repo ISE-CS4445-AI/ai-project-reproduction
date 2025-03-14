@@ -11,6 +11,43 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from PIL import Image
 from differentiable_pipeline import DifferentiableFaceEncoder
+import abc
+
+class BaseGeneticModel(nn.Module, abc.ABC):
+    """
+    Abstract base class for genetic models that generate features from parent latents.
+    This serves as a common interface for both the weight generator and edit parameter generator.
+    """
+    def __init__(self):
+        super(BaseGeneticModel, self).__init__()
+    
+    @abc.abstractmethod
+    def forward(self, father_latent, mother_latent):
+        """
+        Forward pass to generate output from parent latents.
+        
+        Args:
+            father_latent (torch.Tensor): Father's latent code
+            mother_latent (torch.Tensor): Mother's latent code
+            
+        Returns:
+            torch.Tensor: Output tensor (meaning depends on implementation)
+        """
+        pass
+    
+    @abc.abstractmethod
+    def generate_child_latent(self, father_latent, mother_latent):
+        """
+        Generate a child latent code from father and mother latents.
+        
+        Args:
+            father_latent (torch.Tensor): Father's latent code
+            mother_latent (torch.Tensor): Mother's latent code
+            
+        Returns:
+            torch.Tensor: Predicted child latent code
+        """
+        pass
 
 class MockProcessor:
     """
@@ -19,7 +56,7 @@ class MockProcessor:
     """
     def __init__(self, face_encoder):
         self.face_encoder = face_encoder
-        # Create a fixed weight matrix for more stable transformations
+        # Create a fixed weight mat@model.py is my current 'model file', should i create another one for my interface gan one? what structure make senserix for more stable transformations
         self.register_buffers()
         
     def register_buffers(self):
@@ -184,7 +221,7 @@ class AdaptiveDimensionWeightModel(nn.Module):
         
         return weights
 
-class LatentWeightGenerator(nn.Module):
+class LatentWeightGenerator(BaseGeneticModel):
     """Model to predict weights for latent code combination"""
     
     def __init__(self, latent_shape):
@@ -211,17 +248,51 @@ class LatentWeightGenerator(nn.Module):
             torch.Tensor: Weights for latent combination
         """
         return self.model(father_latent, mother_latent)
+        
+    def generate_child_latent(self, father_latent, mother_latent):
+        """
+        Generate a child latent code from father and mother latents.
+        
+        Args:
+            father_latent (torch.Tensor): Father's latent code
+            mother_latent (torch.Tensor): Mother's latent code
+            
+        Returns:
+            torch.Tensor: Predicted child latent code
+        """
+        # Get weights from the model
+        weights = self.forward(father_latent, mother_latent)
+        
+        # Ensure latents are on the same device as weights
+        father_latent = father_latent.to(weights.device)
+        mother_latent = mother_latent.to(weights.device)
+        
+        # Add batch dimension if needed
+        if weights.dim() == 2:
+            weights = weights.unsqueeze(0)
+            father_latent = father_latent.unsqueeze(0)
+            mother_latent = mother_latent.unsqueeze(0)
+        
+        # Combine latents using weights
+        child_latent = father_latent * weights + mother_latent * (1 - weights)
+        
+        # Remove batch dimension if it was added
+        if child_latent.size(0) == 1:
+            child_latent = child_latent.squeeze(0)
+            
+        return child_latent
 
 class LatentWeightTrainer:
-    """Trainer for the latent weight generator model"""
+    """Trainer for genetic models (both weight generators and edit parameter generators)"""
     
-    def __init__(self, processor, latent_shape=(18, 512), learning_rate=0.00005, 
+    def __init__(self, processor, model_type='weight', latent_shape=(18, 512), learning_rate=0.00005, 
                  device=None, save_dir='models', weight_decay=1e-5, clip_value=1.0):
         """
         Initialize the trainer.
         
         Args:
             processor: The E4E processor with combiner for latent operations
+            model_type (str): Type of model to train ('weight' or 'edit')
             latent_shape (tuple): Shape of the latent codes
             learning_rate (float): Learning rate for optimizer
             device (torch.device): Device to use for training
@@ -230,6 +301,7 @@ class LatentWeightTrainer:
             clip_value (float): Gradient clipping value
         """
         self.processor = processor
+        self.model_type = model_type
         self.latent_shape = latent_shape
         self.learning_rate = learning_rate
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -239,8 +311,13 @@ class LatentWeightTrainer:
         # Create model directory
         os.makedirs(save_dir, exist_ok=True)
         
-        # Initialize model
-        self.model = LatentWeightGenerator(latent_shape).to(self.device)
+        # Initialize model based on type
+        if model_type == 'weight':
+            self.model = LatentWeightGenerator(latent_shape).to(self.device)
+        elif model_type == 'edit':
+            self.model = EditParamGenerator(latent_shape).to(self.device)
+        else:
+            raise ValueError(f"Unknown model type: {model_type}. Expected 'weight' or 'edit'")
         
         # Use AdamW with weight decay for better regularization
         self.optimizer = optim.AdamW(
@@ -304,6 +381,120 @@ class LatentWeightTrainer:
         # (1 - weights) is implicitly the weight for mother's contribution
         return father_latent * weights + mother_latent * (1 - weights)
     
+    def predict_weights(self, father_latent, mother_latent):
+        """
+        Predict weights for combining father and mother latents.
+        
+        Args:
+            father_latent (torch.Tensor): Father's latent code
+            mother_latent (torch.Tensor): Mother's latent code
+            
+        Returns:
+            torch.Tensor: Predicted weights for latent combination
+        """
+        self.model.eval()
+        
+        with torch.no_grad():
+            # Ensure latents are on the correct device
+            father_latent = father_latent.to(self.device)
+            mother_latent = mother_latent.to(self.device)
+            
+            # Add batch dimension if needed
+            if father_latent.dim() == 2:
+                father_latent = father_latent.unsqueeze(0)
+            if mother_latent.dim() == 2:
+                mother_latent = mother_latent.unsqueeze(0)
+            
+            # Predict weights
+            result = self.model(father_latent, mother_latent)
+            
+            # Return result (removing batch dimension if it was added)
+            if result.size(0) == 1:
+                result = result.squeeze(0)
+                
+            return result
+    
+    def predict_edit_parameters(self, father_latent, mother_latent):
+        """
+        Predict edit parameters for InterfaceGAN directions.
+        Only valid for edit parameter models.
+        
+        Args:
+            father_latent (torch.Tensor): Father's latent code
+            mother_latent (torch.Tensor): Mother's latent code
+            
+        Returns:
+            dict: Mapping of direction names to parameter values
+        """
+        if self.model_type != 'edit':
+            raise ValueError("This method is only valid for edit parameter models")
+            
+        if not hasattr(self.model, 'get_edit_parameters'):
+            raise AttributeError("Model does not have get_edit_parameters method")
+            
+        self.model.eval()
+        
+        with torch.no_grad():
+            # Ensure latents are on the correct device
+            father_latent = father_latent.to(self.device)
+            mother_latent = mother_latent.to(self.device)
+            
+            return self.model.get_edit_parameters(father_latent, mother_latent)
+    
+    def visualize_edit_parameters(self, father_latent, mother_latent, output_path=None):
+        """
+        Visualize the predicted edit parameters.
+        Only valid for edit parameter models.
+        
+        Args:
+            father_latent (torch.Tensor): Father's latent code
+            mother_latent (torch.Tensor): Mother's latent code
+            output_path (str, optional): Path to save the visualization
+            
+        Returns:
+            matplotlib.figure.Figure: The visualization figure
+        """
+        if self.model_type != 'edit':
+            raise ValueError("This method is only valid for edit parameter models")
+            
+        params = self.predict_edit_parameters(father_latent, mother_latent)
+        
+        # Create bar chart
+        fig, ax = plt.subplots(figsize=(10, 6))
+        directions = list(params.keys())
+        values = list(params.values())
+        
+        bars = ax.bar(directions, values, color=['skyblue', 'lightgreen', 'salmon'])
+        
+        # Add value labels on top of bars
+        for bar in bars:
+            height = bar.get_height()
+            offset = 0.1 if height >= 0 else -0.3
+            ax.text(bar.get_x() + bar.get_width()/2., height + offset,
+                   f'{height:.2f}', ha='center', va='bottom' if height >= 0 else 'top')
+        
+        # Add horizontal line at y=0
+        ax.axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+        
+        # Set labels and title
+        ax.set_ylabel('Parameter Value')
+        ax.set_title('Predicted Edit Parameters')
+        
+        # Set y-axis range to include all values with some padding
+        max_abs_val = max(abs(v) for v in values)
+        y_range = max(3.5, max_abs_val * 1.2)  # At least -3.5 to 3.5 or 20% more than max
+        ax.set_ylim(-y_range, y_range)
+        
+        # Add grid lines
+        ax.grid(True, axis='y', linestyle='--', alpha=0.7)
+        
+        # Save if output path is provided
+        if output_path:
+            plt.savefig(output_path, bbox_inches='tight')
+            print(f"Visualization saved to {output_path}")
+            
+        return fig
+
     def extract_face_embeddings(self, image_paths, save_path=None):
         """
         Extract face embeddings from a list of image paths and optionally save to a file.
@@ -455,13 +646,23 @@ class LatentWeightTrainer:
             # Zero gradients
             self.optimizer.zero_grad()
             
-            # Forward pass - get weights
-            weights = self.model(father_latent, mother_latent)
+            # Forward pass - get model output (weights or edit params)
+            model_output = self.model(father_latent, mother_latent)
             
-            # Combine latents using weights
-            predicted_child_latent = self._combine_latents_with_weights(
-                father_latent, mother_latent, weights
-            )
+            # Generate child latent based on model type
+            if self.model_type == 'weight':
+                # For weight model, combine latents using weights
+                predicted_child_latent = self._combine_latents_with_weights(
+                    father_latent, mother_latent, model_output
+                )
+            else:  # edit model
+                # For edit model, start with average of parents and apply edits
+                # Start with equal blend of parents (base latent)
+                base_latent = (father_latent + mother_latent) / 2.0
+                
+                # We can't use the real processor during training since it's not differentiable
+                # Instead, we'll just use the base latent and rely on the face embedding loss
+                predicted_child_latent = base_latent
             
             # Calculate batch loss
             batch_loss = 0.0
@@ -565,13 +766,19 @@ class LatentWeightTrainer:
                 mother_latent = batch['mother_latent'].to(self.device)
                 original_indices = batch['original_idx'].tolist()
                 
-                # Forward pass - get weights
-                weights = self.model(father_latent, mother_latent)
+                # Forward pass - get model output (weights or edit params)
+                model_output = self.model(father_latent, mother_latent)
                 
-                # Combine latents using weights
-                predicted_child_latent = self._combine_latents_with_weights(
-                    father_latent, mother_latent, weights
-                )
+                # Generate child latent based on model type
+                if self.model_type == 'weight':
+                    # For weight model, combine latents using weights
+                    predicted_child_latent = self._combine_latents_with_weights(
+                        father_latent, mother_latent, model_output
+                    )
+                else:  # edit model
+                    # For edit model, use average of parents
+                    # During validation, we just use the base latent
+                    predicted_child_latent = (father_latent + mother_latent) / 2.0
                 
                 # Calculate batch loss
                 batch_loss = 0.0
@@ -587,7 +794,7 @@ class LatentWeightTrainer:
                     
                     if target_embedding is not None:
                         # Generate embeddings directly (differentiable pathway)
-                        sample_latent = predicted_child_latent[i]
+                        sample_latent = predicted_child_latent[i].unsqueeze(0)  # Add batch dim
                         generated_embedding = self.mock_processor.generate_embeddings_from_latent(sample_latent)
                         
                         # Compute perceptual loss
@@ -794,15 +1001,41 @@ class LatentWeightTrainer:
                 if mother_latent.dim() == 2:
                     mother_latent = mother_latent.unsqueeze(0)
                 
-                # Get weights for this specific pair
-                weights = self.model(father_latent, mother_latent)
-                
-                # Blend latents
-                combined_latent = self._combine_latents_with_weights(
-                    father_latent, mother_latent, weights
-                )
-                
                 try:
+                    # Generate child latent based on model type
+                    if self.model_type == 'weight':
+                        # Get weights for this specific pair
+                        weights = self.model(father_latent, mother_latent)
+                        
+                        # Blend latents
+                        combined_latent = self._combine_latents_with_weights(
+                            father_latent, mother_latent, weights
+                        )
+                        
+                        # Visualize weight heatmap
+                        self.visualize_weight_heatmap(weights.squeeze(0), viz_dir, f'sample_{i}_weights')
+                    else:  # edit model
+                        # Get edit parameters
+                        edit_params = self.model(father_latent, mother_latent)
+                        
+                        # Create base latent (average of parents)
+                        base_latent = (father_latent + mother_latent) / 2.0
+                        
+                        # Apply edits using the processor
+                        combined_latent = self.model.generate_child_latent(
+                            father_latent, mother_latent, self.processor
+                        )
+                        
+                        # Visualize edit parameters
+                        if hasattr(self.model, 'direction_names'):
+                            params_dict = {
+                                name: edit_params.squeeze(0)[j].item() 
+                                for j, name in enumerate(self.model.direction_names)
+                            }
+                            self.visualize_edit_parameters_chart(
+                                params_dict, viz_dir, f'sample_{i}_params'
+                            )
+                    
                     # Generate actual image using the real StyleGAN generator (non-differentiable)
                     # For visualization only, not for training
                     result_image = self.processor.combiner.generate_from_latent(combined_latent.squeeze(0))
@@ -820,9 +1053,6 @@ class LatentWeightTrainer:
                         print(f"Error copying target image: {e}")
                 except Exception as e:
                     print(f"Error generating visualization: {e}")
-                
-                # Visualize weight heatmap
-                self.visualize_weight_heatmap(weights.squeeze(0), viz_dir, f'sample_{i}_weights')
     
     def visualize_weight_heatmap(self, weights, output_dir, name):
         """
@@ -842,6 +1072,48 @@ class LatentWeightTrainer:
         plt.savefig(os.path.join(output_dir, f'{name}.png'))
         plt.close()
     
+    def visualize_edit_parameters_chart(self, params_dict, output_dir, name):
+        """
+        Create bar chart visualization of edit parameters.
+        
+        Args:
+            params_dict: Dictionary of parameter names to values
+            output_dir: Directory to save the visualization
+            name: Base filename for the visualization
+        """
+        # Create bar chart
+        plt.figure(figsize=(10, 6))
+        directions = list(params_dict.keys())
+        values = list(params_dict.values())
+        
+        bars = plt.bar(directions, values, color=['skyblue', 'lightgreen', 'salmon'])
+        
+        # Add value labels on top of bars
+        for bar in bars:
+            height = bar.get_height()
+            offset = 0.1 if height >= 0 else -0.3
+            plt.text(bar.get_x() + bar.get_width()/2., height + offset,
+                   f'{height:.2f}', ha='center', va='bottom' if height >= 0 else 'top')
+        
+        # Add horizontal line at y=0
+        plt.axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+        
+        # Set labels and title
+        plt.ylabel('Parameter Value')
+        plt.title('Predicted Edit Parameters')
+        
+        # Set y-axis range to include all values with some padding
+        max_abs_val = max(abs(v) for v in values)
+        y_range = max(3.5, max_abs_val * 1.2)  # At least -3.5 to 3.5 or 20% more than max
+        plt.ylim(-y_range, y_range)
+        
+        # Add grid lines
+        plt.grid(True, axis='y', linestyle='--', alpha=0.7)
+        
+        # Save figure
+        plt.savefig(os.path.join(output_dir, f'{name}.png'))
+        plt.close()
+    
     def save_model(self, filename):
         """
         Save the model.
@@ -856,7 +1128,8 @@ class LatentWeightTrainer:
             'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
-            'latent_shape': self.latent_shape
+            'latent_shape': self.latent_shape,
+            'model_type': self.model_type
         }, save_path)
         print(f"Model saved to {save_path}")
     
@@ -868,10 +1141,23 @@ class LatentWeightTrainer:
             filename (str): Filename to load model from
             
         Returns:
-            LatentWeightGenerator: Loaded model
+            BaseGeneticModel: Loaded model
         """
         load_path = os.path.join(self.save_dir, filename)
         checkpoint = torch.load(load_path)
+        
+        # Check if the model type matches
+        saved_model_type = checkpoint.get('model_type', 'weight')  # Default to 'weight' for backward compatibility
+        if saved_model_type != self.model_type:
+            print(f"Warning: Loaded model type '{saved_model_type}' doesn't match current type '{self.model_type}'")
+            print("Initializing a new model of the correct type...")
+            
+            # Re-initialize the model with the correct type
+            self.model_type = saved_model_type
+            if saved_model_type == 'weight':
+                self.model = LatentWeightGenerator(self.latent_shape).to(self.device)
+            else:
+                self.model = EditParamGenerator(self.latent_shape).to(self.device)
         
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -915,7 +1201,10 @@ class LatentWeightTrainer:
             PIL.Image: Generated child image
         """
         # Generate child latent
-        child_latent = self.generate_child_latent(father_latent, mother_latent)
+        if self.model_type == 'weight':
+            child_latent = self.model.generate_child_latent(father_latent, mother_latent)
+        else:  # edit model
+            child_latent = self.model.generate_child_latent(father_latent, mother_latent, self.processor)
         
         try:
             # Try to generate image directly with latent on its current device
@@ -943,71 +1232,149 @@ class LatentWeightTrainer:
                 raise e
             
         return result_image
-        
-    def generate_child_latent(self, father_latent, mother_latent):
+
+class EditParamModel(nn.Module):
+    """
+    Model to predict InterfaceGAN edit parameters for generating a child face.
+    This model predicts parameters for three editing directions: age, smile, and pose.
+    """
+    def __init__(self, latent_size):
         """
-        Generate a child latent code from father and mother latents.
+        Initialize the model.
         
         Args:
-            father_latent (torch.Tensor): Father's latent code
-            mother_latent (torch.Tensor): Mother's latent code
-            
-        Returns:
-            torch.Tensor: Predicted child latent code
+            latent_size (int): Total size of flattened latent code
         """
-        # Predict weights
-        weights = self.predict_weights(father_latent, mother_latent)
+        super(EditParamModel, self).__init__()
         
-        # Ensure latents are on the same device as weights
-        father_latent = father_latent.to(weights.device)
-        mother_latent = mother_latent.to(weights.device)
+        # Input size is 2x latent_size (father + mother)
+        input_dim = 2 * latent_size
         
-        # Add batch dimension if needed
-        if weights.dim() == 2:
-            weights = weights.unsqueeze(0)
-            father_latent = father_latent.unsqueeze(0)
-            mother_latent = mother_latent.unsqueeze(0)
-        
-        # Combine latents using weights
-        child_latent = self._combine_latents_with_weights(
-            father_latent, mother_latent, weights
+        # Encoder network
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 2048),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(2048),
+            nn.Dropout(0.3),
+            
+            nn.Linear(2048, 1024),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(1024),
+            nn.Dropout(0.3),
+            
+            nn.Linear(1024, 512),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(512)
         )
         
-        # Remove batch dimension if it was added
-        if child_latent.size(0) == 1:
-            child_latent = child_latent.squeeze(0)
-            
-        return child_latent
+        # Attention module
+        self.attention = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, input_dim),
+            nn.Sigmoid()
+        )
         
-    def predict_weights(self, father_latent, mother_latent):
+        # Output layer for the three edit parameters (age, smile, pose)
+        # Each parameter will be in the range [-3, 3]
+        self.edit_params_decoder = nn.Sequential(
+            nn.Linear(512, 256),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(256),
+            
+            nn.Linear(256, 128),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(128),
+            
+            nn.Linear(128, 3),
+            nn.Tanh()  # Output in range [-1, 1], will be scaled to [-3, 3]
+        )
+        
+    def forward(self, father_latent, mother_latent):
         """
-        Predict weights for combining father and mother latents.
+        Forward pass to generate edit parameters.
         
         Args:
             father_latent (torch.Tensor): Father's latent code
             mother_latent (torch.Tensor): Mother's latent code
             
         Returns:
-            torch.Tensor: Predicted weights for latent combination
+            torch.Tensor: Edit parameters for age, smile, and pose
         """
-        self.model.eval()
+        # Flatten latents
+        batch_size = father_latent.size(0)
+        father_flat = father_latent.view(batch_size, -1)
+        mother_flat = mother_latent.view(batch_size, -1)
         
-        with torch.no_grad():
-            # Ensure latents are on the correct device
-            father_latent = father_latent.to(self.device)
-            mother_latent = mother_latent.to(self.device)
+        # Concatenate parent features
+        combined = torch.cat([father_flat, mother_flat], dim=1)
+        
+        # Apply attention
+        attention_weights = self.attention(combined)
+        attended_inputs = combined * attention_weights
+        
+        # Generate edit parameters
+        encoded = self.encoder(attended_inputs)
+        
+        # Output parameters in range [-3, 3]
+        params = self.edit_params_decoder(encoded) * 3.0
+        
+        return params
+
+class EditParamGenerator(BaseGeneticModel):
+    """
+    Model to predict InterfaceGAN edit parameters for generating a child face.
+    Uses edit parameters to modify the average of parent latents.
+    """
+    def __init__(self, latent_shape):
+        """
+        Initialize the model.
+        
+        Args:
+            latent_shape (tuple): Shape of the latent codes (typically [18, 512] for StyleGAN)
+        """
+        super(EditParamGenerator, self).__init__()
+        
+        # Total size of flattened latent
+        latent_size = latent_shape[0] * latent_shape[1]
+        
+        # Store latent shape for reshaping
+        self.latent_shape = latent_shape
+        
+        # Create model
+        self.model = EditParamModel(latent_size)
+        
+        # Direction names in order of model output
+        self.direction_names = ['age', 'smile', 'pose']
+        
+    def forward(self, father_latent, mother_latent):
+        """
+        Forward pass to generate edit parameters.
+        
+        Args:
+            father_latent (torch.Tensor): Father's latent code
+            mother_latent (torch.Tensor): Mother's latent code
             
-            # Add batch dimension if needed
-            if father_latent.dim() == 2:
-                father_latent = father_latent.unsqueeze(0)
-            if mother_latent.dim() == 2:
-                mother_latent = mother_latent.unsqueeze(0)
+        Returns:
+            torch.Tensor: Edit parameters for age, smile, and pose
+        """
+        return self.model(father_latent, mother_latent)
+    
+    def get_edit_parameters(self, father_latent, mother_latent):
+        """
+        Get edit parameters with their direction names.
+        
+        Args:
+            father_latent (torch.Tensor): Father's latent code
+            mother_latent (torch.Tensor): Mother's latent code
             
-            # Predict weights
-            weights = self.model(father_latent, mother_latent)
+        Returns:
+            dict: Mapping of direction names to edit parameters
+        """
+        params = self.forward(father_latent, mother_latent)
+        
+        # Return parameters with direction names
+        if params.dim() > 1 and params.size(0) == 1:
+            params = params.squeeze(0)
             
-            # Return weights (removing batch dimension if it was added)
-            if weights.size(0) == 1:
-                weights = weights.squeeze(0)
-                
-            return weights
+        return {name: params[i].item() for i, name in enumerate(self.direction_names)}
