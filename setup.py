@@ -8,8 +8,26 @@ import gdown  # For Google Drive folder download
 import zipfile  # For extracting zip files
 import shutil  # For directory operations
 
+# Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+def set_working_directory():
+    """Set the working directory to the correct location."""
+    # If we're in Colab, use /content
+    if os.path.exists('/content'):
+        target_dir = '/content'
+    else:
+        # Otherwise use the directory where setup.py is located
+        target_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Change to the target directory
+    os.chdir(target_dir)
+    logger.info(f"Working directory set to: {os.getcwd()}")
+    
+    # Create a marker file to help verify location
+    with open(os.path.join(target_dir, '.project_root'), 'w') as f:
+        f.write('This file marks the root directory of the project')
 
 def download_file(url, destination, description=None):
     """Download a file with progress bar."""
@@ -483,12 +501,31 @@ def download_aligned_test2():
     Special function dedicated to downloading and extracting AlignedTest2.
     This function tries multiple approaches to ensure AlignedTest2 is available.
     """
+    # Ensure we're in the correct directory
+    if os.path.exists('/content'):
+        base_dir = '/content'
+    else:
+        base_dir = os.getcwd()
+        
     alignedtest_id = '1VoKZyFXG8HpTbfgMtJ24qsE9J81tZvte'
-    zip_path = os.path.join(os.getcwd(), 'AlignedTest2.zip')
-    extract_dir = os.getcwd()
+    zip_path = os.path.join(base_dir, 'AlignedTest2.zip')
+    target_dir = os.path.join(base_dir, 'AlignedTest2')
     
-    if os.path.exists('AlignedTest2') and os.listdir('AlignedTest2'):
-        logger.info("AlignedTest2 directory already exists and has content, skipping download.")
+    logger.info(f"Will download AlignedTest2 to: {target_dir}")
+    
+    # If AlignedTest2 exists in the wrong location, try to move it
+    wrong_location = '/content/content/drive/MyDrive/Child Generator/AlignedTest2'
+    if os.path.exists(wrong_location) and not os.path.exists(target_dir):
+        logger.info(f"Found AlignedTest2 in wrong location: {wrong_location}")
+        try:
+            shutil.move(wrong_location, target_dir)
+            logger.info(f"Successfully moved AlignedTest2 to: {target_dir}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to move directory: {e}")
+    
+    if os.path.exists(target_dir) and os.listdir(target_dir):
+        logger.info(f"AlignedTest2 directory already exists at {target_dir}, skipping download.")
         return True
     
     logger.info("=== DOWNLOADING AlignedTest2 DATASET (THIS MAY TAKE SOME TIME) ===")
@@ -532,53 +569,51 @@ def download_aligned_test2():
         
         if not os.path.exists(zip_path) or os.path.getsize(zip_path) < 1000000:  # Less than 1MB
             logger.error("Failed to download AlignedTest2 dataset after multiple attempts.")
-            
-            # Create empty AlignedTest2 structure for testing
-            logger.warning("Creating empty AlignedTest2 directory structure for testing...")
-            os.makedirs('AlignedTest2', exist_ok=True)
+            os.makedirs(target_dir, exist_ok=True)
             return False
             
         # If we got here, we've successfully downloaded the zip file
         logger.info(f"Successfully downloaded AlignedTest2.zip ({os.path.getsize(zip_path)} bytes)")
-        logger.info("Extracting AlignedTest2.zip...")
+        logger.info(f"Extracting AlignedTest2.zip to {base_dir}...")
         
         # Extract the zip file
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(extract_dir)
+            zip_ref.extractall(base_dir)
         
         # Check if extraction created a nested directory
-        if not os.path.exists('AlignedTest2') and os.path.exists(zip_path):
+        if not os.path.exists(target_dir):
             logger.warning("Extraction may have created nested directory. Checking...")
             
             # Check common nested directory patterns
             for potential_dir in ['AlignedTest2', 'alignedtest2', 'aligned_test2', 'aligned-test2']:
-                if os.path.exists(potential_dir):
-                    if potential_dir != 'AlignedTest2':
-                        logger.info(f"Renaming {potential_dir} to AlignedTest2")
-                        os.rename(potential_dir, 'AlignedTest2')
+                potential_path = os.path.join(base_dir, potential_dir)
+                if os.path.exists(potential_path):
+                    if potential_path != target_dir:
+                        logger.info(f"Renaming {potential_path} to {target_dir}")
+                        os.rename(potential_path, target_dir)
                     break
         
         # Cleanup
         if os.path.exists(zip_path):
             os.remove(zip_path)
             
-        if os.path.exists('AlignedTest2') and os.listdir('AlignedTest2'):
-            logger.info("AlignedTest2 download and extraction completed successfully.")
+        if os.path.exists(target_dir) and os.listdir(target_dir):
+            logger.info(f"AlignedTest2 download and extraction completed successfully to {target_dir}")
             return True
         else:
-            logger.error("AlignedTest2 directory not found after extraction.")
+            logger.error(f"AlignedTest2 directory not found at {target_dir} after extraction.")
             return False
             
     except Exception as e:
         logger.error(f"Error downloading or extracting AlignedTest2: {str(e)}")
-        
-        # Create empty AlignedTest2 structure for testing
-        logger.warning("Creating empty AlignedTest2 directory structure for testing...")
-        os.makedirs('AlignedTest2', exist_ok=True)
+        os.makedirs(target_dir, exist_ok=True)
         return False
 
 def main():
     logger.info("Starting setup...")
+    
+    # Set the working directory first
+    set_working_directory()
     
     # First priority: Download AlignedTest2
     logger.info("Downloading AlignedTest2 dataset (critical for training)...")
