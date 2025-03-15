@@ -478,8 +478,111 @@ def verify_image_files():
     except Exception as e:
         logger.error(f"Error verifying image files: {e}")
 
+def download_aligned_test2():
+    """
+    Special function dedicated to downloading and extracting AlignedTest2.
+    This function tries multiple approaches to ensure AlignedTest2 is available.
+    """
+    alignedtest_id = '1VoKZyFXG8HpTbfgMtJ24qsE9J81tZvte'
+    zip_path = './AlignedTest2.zip'
+    extract_dir = '.'
+    
+    if os.path.exists('AlignedTest2') and os.listdir('AlignedTest2'):
+        logger.info("AlignedTest2 directory already exists and has content, skipping download.")
+        return True
+    
+    logger.info("=== DOWNLOADING AlignedTest2 DATASET (THIS MAY TAKE SOME TIME) ===")
+    
+    # Try multiple methods to download the file
+    try:
+        logger.info("Attempting download using gdown...")
+        # First method: Standard gdown
+        gdown.download(
+            f"https://drive.google.com/uc?id={alignedtest_id}", 
+            zip_path, 
+            quiet=False, 
+            fuzzy=True
+        )
+        
+        if not os.path.exists(zip_path) or os.path.getsize(zip_path) < 1000000:  # Less than 1MB
+            # Second method: gdown with no cookies
+            logger.info("First attempt failed, trying with no cookies...")
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
+                
+            gdown.download(
+                f"https://drive.google.com/uc?id={alignedtest_id}", 
+                zip_path, 
+                quiet=False, 
+                fuzzy=True, 
+                use_cookies=False
+            )
+        
+        if not os.path.exists(zip_path) or os.path.getsize(zip_path) < 1000000:  # Less than 1MB
+            # Third method: command line gdown
+            logger.info("Second attempt failed, trying command line gdown...")
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
+                
+            subprocess.run(
+                f"gdown --id {alignedtest_id} -O {zip_path} --fuzzy",
+                shell=True,
+                check=True
+            )
+        
+        if not os.path.exists(zip_path) or os.path.getsize(zip_path) < 1000000:  # Less than 1MB
+            logger.error("Failed to download AlignedTest2 dataset after multiple attempts.")
+            
+            # Create empty AlignedTest2 structure for testing
+            logger.warning("Creating empty AlignedTest2 directory structure for testing...")
+            os.makedirs('AlignedTest2', exist_ok=True)
+            return False
+            
+        # If we got here, we've successfully downloaded the zip file
+        logger.info(f"Successfully downloaded AlignedTest2.zip ({os.path.getsize(zip_path)} bytes)")
+        logger.info("Extracting AlignedTest2.zip...")
+        
+        # Extract the zip file
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_dir)
+        
+        # Check if extraction created a nested directory
+        if not os.path.exists('AlignedTest2') and os.path.exists('AlignedTest2.zip'):
+            logger.warning("Extraction may have created nested directory. Checking...")
+            
+            # Check common nested directory patterns
+            for potential_dir in ['AlignedTest2', 'alignedtest2', 'aligned_test2', 'aligned-test2']:
+                if os.path.exists(potential_dir):
+                    if potential_dir != 'AlignedTest2':
+                        logger.info(f"Renaming {potential_dir} to AlignedTest2")
+                        os.rename(potential_dir, 'AlignedTest2')
+                    break
+        
+        # Cleanup
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+            
+        if os.path.exists('AlignedTest2') and os.listdir('AlignedTest2'):
+            logger.info("AlignedTest2 download and extraction completed successfully.")
+            return True
+        else:
+            logger.error("AlignedTest2 directory not found after extraction.")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error downloading or extracting AlignedTest2: {str(e)}")
+        
+        # Create empty AlignedTest2 structure for testing
+        logger.warning("Creating empty AlignedTest2 directory structure for testing...")
+        os.makedirs('AlignedTest2', exist_ok=True)
+        return False
+
 def main():
     logger.info("Starting setup...")
+    
+    # First priority: Download AlignedTest2
+    logger.info("Downloading AlignedTest2 dataset (critical for training)...")
+    alignedtest_success = download_aligned_test2()
     
     # Create project structure
     create_directories()
@@ -499,6 +602,7 @@ def main():
     # Verify image files exist
     verify_image_files()
     
+    # Final status message
     logger.info("""
 Setup complete! The system is ready to go:
 1. Pre-computed latents and child embeddings have been downloaded
@@ -507,7 +611,19 @@ Setup complete! The system is ready to go:
 4. Directory structure has been created
 5. train.py has been updated with correct paths
 6. Image file verification has been performed
+""")
 
+    # Show warning if AlignedTest2 download failed
+    if not alignedtest_success:
+        logger.warning("""
+⚠️ WARNING: The AlignedTest2 dataset could not be downloaded properly.
+You may encounter errors during training related to missing image files.
+Please consider manually downloading the dataset from:
+https://drive.google.com/uc?id=1VoKZyFXG8HpTbfgMtJ24qsE9J81tZvte
+and extracting it to create an AlignedTest2 folder in your working directory.
+""")
+    
+    logger.info("""
 To start training:
 1. Place your family images in the appropriate directories (if you plan to use your own images):
    - sample_images/fathers/
