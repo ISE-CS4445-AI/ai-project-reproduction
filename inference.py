@@ -189,10 +189,10 @@ def main():
     
     # Process parent images to get latent codes
     logger.info(f"Processing parent image 1: {args.parent1}")
-    parent1_latent = processor.process_image(args.parent1)['latent']
+    _, parent1_latent, _ = processor.process_image(args.parent1)
     
     logger.info(f"Processing parent image 2: {args.parent2}")
-    parent2_latent = processor.process_image(args.parent2)['latent']
+    _, parent2_latent, _ = processor.process_image(args.parent2)
     
     # Initialize the LatentWeightTrainer (no need to train, just for inference)
     latent_shape = parent1_latent.shape
