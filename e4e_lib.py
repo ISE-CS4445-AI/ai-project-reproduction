@@ -39,22 +39,37 @@ class E4ESetup:
         self.experiment_type = experiment_type
         self.base_dir = base_dir or os.getcwd()
         
-        # Define paths
+        # Define possible paths - will check these in order
         self.code_dir = os.path.join(self.base_dir, 'encoder4editing')
         self.models_dir = os.path.join(self.code_dir, 'pretrained_models')
         self.alignments_dir = self.base_dir
         self.editings_dir = os.path.join(self.code_dir, 'editings')
         
+        # Alternative directories to check for models
+        self.alt_models_dirs = [
+            os.path.join(self.base_dir, 'pretrained_models'),  # ./pretrained_models/
+            'pretrained_models',  # ./pretrained_models/
+            os.path.join(os.getcwd(), 'pretrained_models')  # <current_dir>/pretrained_models/
+        ]
+        
+        # Alternative directories to check for face predictor
+        self.alt_face_predictor_dirs = [
+            self.base_dir,  # Base directory
+            'pretrained_models',  # ./pretrained_models/
+            os.path.join(os.getcwd(), 'pretrained_models'),  # <current_dir>/pretrained_models/
+            os.getcwd()  # Current directory
+        ]
+        
         # Create directories if they don't exist
         os.makedirs(self.models_dir, exist_ok=True)
         os.makedirs(self.editings_dir, exist_ok=True)
         
-        # Path mappings
-        self.MODEL_PATHS = {
-            "ffhq_encode": os.path.join(self.models_dir, "e4e_ffhq_encode.pt"),
-            "cars_encode": os.path.join(self.models_dir, "e4e_cars_encode.pt"),
-            "horse_encode": os.path.join(self.models_dir, "e4e_horse_encode.pt"),
-            "church_encode": os.path.join(self.models_dir, "e4e_church_encode.pt")
+        # Path mappings with alternatives
+        self.MODEL_FILENAMES = {
+            "ffhq_encode": "e4e_ffhq_encode.pt",
+            "cars_encode": "e4e_cars_encode.pt",
+            "horse_encode": "e4e_horse_encode.pt",
+            "church_encode": "e4e_church_encode.pt"
         }
         
         # Configure necessary paths based on experiment type
@@ -63,13 +78,34 @@ class E4ESetup:
     def _configure_paths(self):
         """Configure necessary file paths based on experiment type."""
         # Set model path
-        if self.experiment_type not in self.MODEL_PATHS:
+        if self.experiment_type not in self.MODEL_FILENAMES:
             raise ValueError(f"Experiment type {self.experiment_type} not supported")
         
-        self.model_path = self.MODEL_PATHS[self.experiment_type]
+        model_filename = self.MODEL_FILENAMES[self.experiment_type]
+        
+        # Initialize with the default path
+        self.model_path = os.path.join(self.models_dir, model_filename)
+        
+        # Check if file exists at default location, if not, try alternative locations
+        if not os.path.isfile(self.model_path):
+            for alt_dir in self.alt_models_dirs:
+                alt_path = os.path.join(alt_dir, model_filename)
+                if os.path.isfile(alt_path):
+                    self.model_path = alt_path
+                    print(f"Found model at alternative location: {alt_path}")
+                    break
         
         # Set face predictor path for face alignment
         self.face_predictor_path = os.path.join(self.alignments_dir, "shape_predictor_68_face_landmarks.dat")
+        
+        # Check if face predictor exists at default location, if not, try alternative locations
+        if not os.path.isfile(self.face_predictor_path):
+            for alt_dir in self.alt_face_predictor_dirs:
+                alt_path = os.path.join(alt_dir, "shape_predictor_68_face_landmarks.dat")
+                if os.path.isfile(alt_path):
+                    self.face_predictor_path = alt_path
+                    print(f"Found face predictor at alternative location: {alt_path}")
+                    break
         
         # Set editing paths
         self.interfacegan_dir = os.path.join(self.editings_dir, "interfacegan_directions")
@@ -99,42 +135,33 @@ class E4ESetup:
     
     def get_download_instructions(self):
         """
-        Get instructions for downloading the required files.
+        Get instructions for downloading required files.
         
         Returns:
-            str: Instructions for downloading the required files
+            str: Instructions for downloading required files
         """
-        model_filename = os.path.basename(self.model_path)
+        model_filename = self.MODEL_FILENAMES[self.experiment_type]
         
-        instructions = f"""
+        return f"""
         To use this library, you need to manually download the following files:
         
         1. Pretrained Model: {model_filename}
-           - Place it at: {self.model_path}
-        """
+           - Place it in one of these directories:
+             * {self.models_dir}
+             * {os.path.join(os.getcwd(), 'pretrained_models')}
+             * {os.path.join(self.base_dir, 'pretrained_models')}
         
-        if self.experiment_type == 'ffhq_encode':
-            instructions += f"""
         2. Face Alignment Predictor: shape_predictor_68_face_landmarks.dat
-           - Place it at: {self.face_predictor_path}
+           - Place it in one of these directories:
+             * {self.alignments_dir}
+             * {os.path.join(os.getcwd(), 'pretrained_models')}
+             * {os.getcwd()}
            - Download from: http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2
            - Extract with: bzip2 -dk shape_predictor_68_face_landmarks.dat.bz2
-        """
         
-        model_ids = {
-            "ffhq_encode": "1cUv_reLE6k3604or78EranS7XzuVMWeO",
-            "cars_encode": "17faPqBce2m1AQeLCLHUVXaDfxMRU2QcV", 
-            "horse_encode": "1TkLLnuX86B_BMo2ocYD0kX9kWh53rUVX",
-            "church_encode": "1-L0ZdnQLwtdy6-A_Ccgq5uNJGTqE7qBa"
-        }
-        
-        if self.experiment_type in model_ids:
-            instructions += f"""
         You can download the model using gdown:
-        gdown {model_ids[self.experiment_type]} -O {self.model_path}
+        gdown 1cUv_reLE6k3604or78EranS7XzuVMWeO -O {os.path.join(os.getcwd(), 'pretrained_models', model_filename)}
         """
-        
-        return instructions
 
 
 class E4EPreprocessor:

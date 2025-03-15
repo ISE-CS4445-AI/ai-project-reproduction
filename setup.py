@@ -136,8 +136,11 @@ def download_models():
         }
     }
     
-    # Download and extract model files
+    # Create model directories and ensure they exist
     os.makedirs('pretrained_models', exist_ok=True)
+    os.makedirs('e4e', exist_ok=True)
+    
+    # Download and extract model files
     for model_name, model_info in models.items():
         if not os.path.exists(model_info['path']):
             logger.info(f"Downloading {model_name}...")
@@ -146,6 +149,19 @@ def download_models():
             if model_info['path'].endswith('.bz2'):
                 logger.info(f"Extracting {model_name}...")
                 run_command(f"bzip2 -dk {model_info['path']}", f"Extracting {model_name}")
+                
+                # Also copy the extracted file to the root directory for easier access
+                unbz2_path = model_info['path'][:-4]  # Remove .bz2 extension
+                shutil.copy2(unbz2_path, os.path.basename(unbz2_path))
+                logger.info(f"Copied {unbz2_path} to {os.path.basename(unbz2_path)}")
+    
+    # Also copy the e4e model to various locations to ensure it's found
+    if os.path.exists('pretrained_models/e4e_ffhq_encode.pt'):
+        logger.info("Copying e4e model to alternative locations...")
+        # Copy to e4e directory
+        os.makedirs('e4e/encoder4editing/pretrained_models', exist_ok=True)
+        shutil.copy2('pretrained_models/e4e_ffhq_encode.pt', 'e4e/encoder4editing/pretrained_models/e4e_ffhq_encode.pt')
+        logger.info("Copied e4e model to e4e/encoder4editing/pretrained_models/")
     
     # Create CSVs directory if it doesn't exist
     os.makedirs('CSVs', exist_ok=True)
@@ -185,6 +201,40 @@ def download_models():
             if not os.path.exists(data_info['path']):
                 logger.info(f"Downloading pre-computed {data_name}...")
                 download_gdrive_file(data_info['id'], data_info['path'], f"Downloading {data_name}")
+                
+    # Create symbolic links to ensure files are found in expected locations
+    logger.info("Creating symbolic links for model files...")
+    os.makedirs('encoder4editing/pretrained_models', exist_ok=True)
+    
+    # Create symlinks for e4e model
+    if os.path.exists('pretrained_models/e4e_ffhq_encode.pt'):
+        try:
+            if not os.path.exists('encoder4editing/pretrained_models/e4e_ffhq_encode.pt'):
+                os.symlink(
+                    os.path.abspath('pretrained_models/e4e_ffhq_encode.pt'),
+                    'encoder4editing/pretrained_models/e4e_ffhq_encode.pt'
+                )
+                logger.info("Created symlink for e4e model in encoder4editing/pretrained_models/")
+        except OSError as e:
+            logger.warning(f"Failed to create symlink: {e}")
+            # If symlink fails, copy the file instead
+            shutil.copy2('pretrained_models/e4e_ffhq_encode.pt', 'encoder4editing/pretrained_models/e4e_ffhq_encode.pt')
+            logger.info("Copied e4e model to encoder4editing/pretrained_models/ instead")
+            
+    # Create symlinks for face predictor
+    if os.path.exists('pretrained_models/shape_predictor_68_face_landmarks.dat'):
+        try:
+            if not os.path.exists('shape_predictor_68_face_landmarks.dat'):
+                os.symlink(
+                    os.path.abspath('pretrained_models/shape_predictor_68_face_landmarks.dat'),
+                    'shape_predictor_68_face_landmarks.dat'
+                )
+                logger.info("Created symlink for face predictor in root directory")
+        except OSError as e:
+            logger.warning(f"Failed to create symlink: {e}")
+            # If symlink fails, copy the file instead
+            shutil.copy2('pretrained_models/shape_predictor_68_face_landmarks.dat', 'shape_predictor_68_face_landmarks.dat')
+            logger.info("Copied face predictor to root directory instead")
 
 def setup_encoder4editing():
     """Clone and set up the encoder4editing repository."""

@@ -93,7 +93,7 @@ def get_family(family_id, base_path, csv_path):
 BASE_PATH = "./AlignedTest2"  # Base path for images
 CSV_PATH = "./CSVs/checkpoint10.csv"  # Path to family data CSV
 OUTPUT_DIR = './outputs'  # Output directory for generated images
-E4E_BASE_DIR = './e4e'  # Base directory for E4E model
+E4E_BASE_DIR = None  # Let E4EProcessor find the model files automatically
 LATENT_DIR = './latents'  # Directory containing pre-computed latent codes
 EMBEDDINGS_DIR = './embeddings'  # Directory for storing face embeddings
 
@@ -181,7 +181,7 @@ child_images = children
 print("Initializing E4E processor...")
 processor = E4EProcessor(
     experiment_type='ffhq_encode',
-    base_dir=E4E_BASE_DIR,
+    base_dir=None,  # Let E4EProcessor find the model files automatically
     memory_efficient=False,
     enable_mixed_precision=False,
     max_batch_size=1
@@ -314,7 +314,10 @@ class TrainingManager:
         logger.info("Initializing E4E processor...")
         self.processor = E4EProcessor(
             experiment_type='ffhq_encode',
-            memory_efficient=False
+            base_dir=None,  # Let E4EProcessor find the model files automatically
+            memory_efficient=False,
+            enable_mixed_precision=False,
+            max_batch_size=1
         )
         
     def initialize_trainer(self):
