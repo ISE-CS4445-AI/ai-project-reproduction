@@ -87,15 +87,57 @@ def download_gdrive_file(file_id, destination, description=None):
         logger.info(f"Successfully downloaded {desc} to {destination} (retry method)")
 
 def extract_zip(zip_path, extract_to):
-    """Extract a zip file to the specified directory."""
+    """Extract a zip file to the specified directory and fix nested directories."""
     logger.info(f"Extracting {zip_path} to {extract_to}...")
     
     # Create extraction directory if it doesn't exist
     os.makedirs(extract_to, exist_ok=True)
     
+    # Get the basename without extension to check for nested directories with same name
+    zip_basename = os.path.splitext(os.path.basename(zip_path))[0]
+    
     # Extract the zip file
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
         zip_ref.extractall(extract_to)
+    
+    # Check for nested directory with the same name as the target directory
+    nested_dir = os.path.join(extract_to, zip_basename)
+    if os.path.isdir(nested_dir) and os.path.exists(nested_dir):
+        logger.info(f"Detected nested directory {nested_dir}, fixing directory structure...")
+        
+        # Move all files from nested directory to parent directory
+        for item in os.listdir(nested_dir):
+            source = os.path.join(nested_dir, item)
+            dest = os.path.join(extract_to, item)
+            
+            # Handle existing files/directories
+            if os.path.exists(dest):
+                if os.path.isdir(dest):
+                    # Merge directories
+                    for subitem in os.listdir(source):
+                        shutil.move(
+                            os.path.join(source, subitem),
+                            os.path.join(dest, subitem)
+                        )
+                else:
+                    # For files, add a suffix to avoid conflicts
+                    base, ext = os.path.splitext(dest)
+                    counter = 1
+                    while os.path.exists(dest):
+                        dest = f"{base}_{counter}{ext}"
+                        counter += 1
+                    shutil.move(source, dest)
+            else:
+                # Simple move if destination doesn't exist
+                shutil.move(source, dest)
+                
+        # Remove the now-empty nested directory
+        try:
+            os.rmdir(nested_dir)
+            logger.info(f"Removed empty nested directory: {nested_dir}")
+        except OSError:
+            # Directory might not be empty due to hidden files, etc.
+            logger.warning(f"Could not remove directory {nested_dir}, it may not be empty")
     
     logger.info(f"Successfully extracted {zip_path}")
 
@@ -212,11 +254,56 @@ def download_models():
         if data_info['is_zip']:
             # For zip files, check if the extraction directory already has files
             extract_dir = data_info.get('extract_to', os.path.dirname(data_info['path']))
+            
+            # Special case for AlignedTest2 - check if it exists directly
+            if data_name == 'aligned_test':
+                if not os.path.exists('AlignedTest2'):
+                    logger.info(f"AlignedTest2 directory not found. Downloading {data_name}...")
+                    download_gdrive_file(data_info['id'], data_info['path'], f"Downloading {data_name}")
+                    extract_zip(data_info['path'], extract_dir)
+                    os.remove(data_info['path'])  # Clean up zip after extraction
+                else:
+                    logger.info("AlignedTest2 directory already exists, skipping download.")
+                continue  # Skip the rest of the loop for this item
+                
+            # Handle other zip files
             if os.path.exists(extract_dir) and os.listdir(extract_dir):
-                if extract_dir == 'latents':
-                    logger.info(f"{extract_dir} directory already contains files, skipping download of {data_name}.")
-                elif extract_dir == '.' and os.path.exists('AlignedTest2'):
-                    logger.info(f"AlignedTest2 directory already exists, skipping download of {data_name}.")
+                if data_name == 'latents':
+                    # Special handling for latents.zip to ensure proper directory structure
+                    if not os.path.exists(extract_dir) or (os.path.exists(extract_dir) and len(os.listdir(extract_dir)) == 0):
+                        # Download and extract the zip file
+                        logger.info(f"Downloading pre-computed {data_name}...")
+                        download_gdrive_file(data_info['id'], data_info['path'], f"Downloading {data_name}")
+                        
+                        # Extract the zip file with special handling for nested directories
+                        extract_zip(data_info['path'], extract_dir)
+                        
+                        # Verify that latent files are in the correct location
+                        if not any(f.startswith('father_latent_') for f in os.listdir(extract_dir)):
+                            logger.warning(f"No latent files found directly in {extract_dir}. Checking for nested directory...")
+                            
+                            # Check if there's a nested 'latents' directory
+                            nested_latents = os.path.join(extract_dir, 'latents')
+                            if os.path.exists(nested_latents) and os.path.isdir(nested_latents):
+                                logger.info(f"Found nested latents directory. Moving files to {extract_dir}...")
+                                
+                                # Move all files from nested latents to parent directory
+                                for item in os.listdir(nested_latents):
+                                    shutil.move(
+                                        os.path.join(nested_latents, item),
+                                        os.path.join(extract_dir, item)
+                                    )
+                                
+                                # Remove the empty nested directory
+                                try:
+                                    os.rmdir(nested_latents)
+                                except OSError:
+                                    logger.warning(f"Could not remove {nested_latents}, it may not be empty")
+                        
+                        # Clean up the zip file
+                        os.remove(data_info['path'])
+                    else:
+                        logger.info(f"{extract_dir} directory already contains files, skipping download of {data_name}.")
                 else:
                     # Download and extract the zip file
                     logger.info(f"Downloading pre-computed {data_name}...")
@@ -330,6 +417,67 @@ def update_train_py():
     else:
         logger.warning("train.py not found. Please update the paths manually.")
 
+def verify_image_files():
+    """Verify that all image files referenced in the CSV file exist in the AlignedTest2 directory."""
+    csv_path = "CSVs/checkpoint10.csv"
+    base_path = "AlignedTest2"
+    
+    if not os.path.exists(csv_path):
+        logger.warning(f"CSV file {csv_path} not found. Cannot verify image files.")
+        return
+    
+    if not os.path.exists(base_path):
+        logger.error(f"AlignedTest2 directory not found. Images cannot be verified.")
+        return
+    
+    logger.info("Verifying image files referenced in the CSV...")
+    
+    try:
+        import pandas as pd
+        
+        # Load the CSV
+        df = pd.read_csv(csv_path)
+        missing_files = []
+        
+        # Parse string lists in the CSV
+        for list_col_name in ["mother_images", "father_images", "child_images"]:
+            if list_col_name in df.columns:
+                try:
+                    df[list_col_name] = df[list_col_name].map(eval)
+                except Exception as e:
+                    logger.error(f"Error parsing {list_col_name} column: {e}")
+                    continue
+        
+        # Check all image paths
+        total_files = 0
+        missing_count = 0
+        
+        for _, family in df.iterrows():
+            for column in ["mother_images", "father_images", "child_images"]:
+                if column in family and isinstance(family[column], list):
+                    for img_path in family[column]:
+                        total_files += 1
+                        full_path = os.path.join(base_path, img_path)
+                        if not os.path.exists(full_path):
+                            missing_files.append(img_path)
+                            missing_count += 1
+        
+        # Report results
+        if missing_count > 0:
+            logger.warning(f"Found {missing_count} missing files out of {total_files} referenced in the CSV.")
+            logger.warning(f"First few missing files: {missing_files[:5]}")
+            
+            # Write missing files to a log file for reference
+            with open("missing_images.log", "w") as f:
+                for file in missing_files:
+                    f.write(f"{file}\n")
+            logger.info("Full list of missing files written to missing_images.log")
+        else:
+            logger.info(f"All {total_files} image files referenced in the CSV exist!")
+    
+    except Exception as e:
+        logger.error(f"Error verifying image files: {e}")
+
 def main():
     logger.info("Starting setup...")
     
@@ -348,6 +496,9 @@ def main():
     # Update train.py with correct paths
     update_train_py()
     
+    # Verify image files exist
+    verify_image_files()
+    
     logger.info("""
 Setup complete! The system is ready to go:
 1. Pre-computed latents and child embeddings have been downloaded
@@ -355,6 +506,7 @@ Setup complete! The system is ready to go:
 3. All required models have been installed
 4. Directory structure has been created
 5. train.py has been updated with correct paths
+6. Image file verification has been performed
 
 To start training:
 1. Place your family images in the appropriate directories (if you plan to use your own images):

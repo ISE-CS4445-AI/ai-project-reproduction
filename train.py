@@ -37,7 +37,25 @@ def get_image_from_path(image_path):
         img = Image.open(image_path)
         return img
     except FileNotFoundError:
-        print(f"File not found: {image_path}")
+        logger.error(f"File not found: {image_path}")
+        # Look for the file in alternative locations
+        filename = os.path.basename(image_path)
+        alt_locations = [
+            os.path.join("AlignedTest2", filename),  # Try direct in AlignedTest2
+            os.path.join("sample_images", "fathers", filename),
+            os.path.join("sample_images", "mothers", filename),
+            os.path.join("sample_images", "children", filename)
+        ]
+        
+        for alt_path in alt_locations:
+            if os.path.exists(alt_path):
+                logger.info(f"Found alternative for {image_path} at {alt_path}")
+                return Image.open(alt_path)
+        
+        logger.warning(f"No alternative found for {image_path}")
+        return None
+    except Exception as e:
+        logger.error(f"Error loading image {image_path}: {str(e)}")
         return None
 
 def get_family(family_id, base_path, csv_path):
@@ -130,6 +148,37 @@ def prepare_environment(config=None):
     
     return config
 
+def verify_family_images(father_images, mother_images, children_images):
+    """
+    Verify that all images in a family exist and are valid.
+    
+    Args:
+        father_images (list): List of father image paths
+        mother_images (list): List of mother image paths
+        children_images (list): List of child image paths
+        
+    Returns:
+        tuple: (is_valid, valid_indices) 
+               is_valid: True if at least one set of images is valid
+               valid_indices: List of indices for valid image sets
+    """
+    valid_indices = []
+    
+    # Find the minimum length of the three lists
+    min_len = min(len(father_images), len(mother_images), len(children_images))
+    
+    for j in range(min_len):
+        # Check all three images for this family set
+        f_img = get_image_from_path(father_images[j]) 
+        m_img = get_image_from_path(mother_images[j])
+        c_img = get_image_from_path(children_images[j])
+        
+        # Only consider valid if all three images exist
+        if f_img is not None and m_img is not None and c_img is not None:
+            valid_indices.append(j)
+    
+    return len(valid_indices) > 0, valid_indices
+
 def load_family_data(config):
     """
     Load family data from the CSV file or sample data.
@@ -144,6 +193,8 @@ def load_family_data(config):
     fathers = []
     mothers = []
     children = []
+    valid_family_count = 0
+    invalid_family_count = 0
 
     # Try to load from the CSV path
     try:
@@ -160,12 +211,23 @@ def load_family_data(config):
                 mother_images = family.get('mother_images')
                 children_images = family.get('child_images')
 
-                for j in range(min(len(father_images), len(mother_images), len(children_images))):
-                    fathers.append(father_images[j])
-                    mothers.append(mother_images[j])
-                    children.append(children_images[j])
+                # Verify and only add valid image sets
+                is_valid, valid_indices = verify_family_images(father_images, mother_images, children_images)
+                
+                if is_valid:
+                    valid_family_count += 1
+                    # Only add the valid image sets
+                    for j in valid_indices:
+                        fathers.append(father_images[j])
+                        mothers.append(mother_images[j])
+                        children.append(children_images[j])
+                else:
+                    invalid_family_count += 1
+                    logger.warning(f"Family {i} has no valid image sets, skipping...")
         
-        logger.info(f"Loaded {len(fathers)} family image sets")
+        logger.info(f"Loaded {len(fathers)} family image sets from {valid_family_count} valid families")
+        if invalid_family_count > 0:
+            logger.warning(f"Skipped {invalid_family_count} families with missing or invalid images")
 
     except FileNotFoundError:
         logger.warning(f"CSV file not found at '{config['csv_path']}'")
