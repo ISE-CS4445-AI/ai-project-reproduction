@@ -4,27 +4,8 @@ import random
 from PIL import Image
 import torch
 import logging
-import numpy as np
 
 logger = logging.getLogger(__name__)
-
-def load_tensor_with_weights_workaround(path, map_location=None):
-    """
-    Helper function to load a tensor file with handling for PyTorch 2.6+ changes.
-    
-    Args:
-        path (str): Path to the tensor file
-        map_location: Device mapping function or string
-        
-    Returns:
-        torch.Tensor: Loaded tensor
-    """
-    try:
-        # First try with weights_only=False to handle PyTorch 2.6+ changes
-        return torch.load(path, map_location=map_location, weights_only=False)
-    except TypeError:
-        # Fall back to default for older PyTorch versions that don't have weights_only parameter
-        return torch.load(path, map_location=map_location)
 
 class FamilyDataLoader:
     def __init__(self, base_path, csv_path):
@@ -173,14 +154,14 @@ class FamilyDataLoader:
             mother_latent_path = os.path.join(latent_dir, f'mother_latent_{i}.pt')
             
             try:
-                father_latent = load_tensor_with_weights_workaround(father_latent_path)
+                father_latent = torch.load(father_latent_path)
                 father_latents.append(father_latent)
             except Exception as e:
                 logger.error(f"Error loading father latent {father_latent_path}: {e}")
                 father_latents.append(None)
                 
             try:
-                mother_latent = load_tensor_with_weights_workaround(mother_latent_path)
+                mother_latent = torch.load(mother_latent_path)
                 mother_latents.append(mother_latent)
             except Exception as e:
                 logger.error(f"Error loading mother latent {mother_latent_path}: {e}")

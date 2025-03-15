@@ -11,26 +11,6 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from PIL import Image
 from differentiable_pipeline import DifferentiableFaceEncoder
-import cv2
-import dlib
-
-def load_tensor_with_weights_workaround(path, map_location=None):
-    """
-    Helper function to load a tensor file with handling for PyTorch 2.6+ changes.
-    
-    Args:
-        path (str): Path to the tensor file
-        map_location: Device mapping function or string
-        
-    Returns:
-        torch.Tensor: Loaded tensor
-    """
-    try:
-        # First try with weights_only=False to handle PyTorch 2.6+ changes
-        return torch.load(path, map_location=map_location, weights_only=False)
-    except TypeError:
-        # Fall back to default for older PyTorch versions that don't have weights_only parameter
-        return torch.load(path, map_location=map_location)
 
 class MockProcessor:
     """
@@ -648,7 +628,7 @@ class LatentWeightTrainer:
         # Handle child embeddings - either load from file or extract from images
         if load_embeddings_from and os.path.exists(load_embeddings_from):
             print(f"Loading pre-computed child embeddings from {load_embeddings_from}")
-            embeddings_data = load_tensor_with_weights_workaround(load_embeddings_from)
+            embeddings_data = torch.load(load_embeddings_from)
             stacked_embeddings = embeddings_data['embeddings']
             valid_indices = embeddings_data['indices']
             
@@ -891,7 +871,7 @@ class LatentWeightTrainer:
             LatentWeightGenerator: Loaded model
         """
         load_path = os.path.join(self.save_dir, filename)
-        checkpoint = load_tensor_with_weights_workaround(load_path)
+        checkpoint = torch.load(load_path)
         
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
