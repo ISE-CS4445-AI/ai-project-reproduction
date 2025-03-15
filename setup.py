@@ -484,8 +484,8 @@ def download_aligned_test2():
     This function tries multiple approaches to ensure AlignedTest2 is available.
     """
     alignedtest_id = '1VoKZyFXG8HpTbfgMtJ24qsE9J81tZvte'
-    zip_path = './AlignedTest2.zip'
-    extract_dir = '.'
+    zip_path = os.path.join(os.getcwd(), 'AlignedTest2.zip')
+    extract_dir = os.getcwd()
     
     if os.path.exists('AlignedTest2') and os.listdir('AlignedTest2'):
         logger.info("AlignedTest2 directory already exists and has content, skipping download.")
@@ -547,7 +547,7 @@ def download_aligned_test2():
             zip_ref.extractall(extract_dir)
         
         # Check if extraction created a nested directory
-        if not os.path.exists('AlignedTest2') and os.path.exists('AlignedTest2.zip'):
+        if not os.path.exists('AlignedTest2') and os.path.exists(zip_path):
             logger.warning("Extraction may have created nested directory. Checking...")
             
             # Check common nested directory patterns

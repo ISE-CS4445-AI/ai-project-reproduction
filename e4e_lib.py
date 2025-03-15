@@ -353,7 +353,7 @@ class E4EInference:
                 except TypeError:
                     # Fallback for older PyTorch versions that don't have weights_only parameter
                     logger.info("Falling back to legacy torch.load (PyTorch < 2.6)")
-                    ckpt = torch.load(self.model_path, map_location='cpu')
+                ckpt = torch.load(self.model_path, map_location='cpu')
                 pbar.update(1)
             
             load_time = time.time() - start_time
@@ -913,12 +913,12 @@ class E4EEditor:
         # Check which directions are actually available
         available_directions = {}
         for name, path in self.interfacegan_directions.items():
-            if os.path.isfile(path):
+                if os.path.isfile(path):
                 available_directions[name] = path
                 
         self.interfacegan_directions = available_directions
         return available_directions
-
+    
     def apply_interfacegan(self, latent, direction_name, factor=1.0, return_latent=False):
         """
         Apply interfacegan direction to the latent code.
@@ -952,13 +952,13 @@ class E4EEditor:
         except TypeError:
             # Fallback for older PyTorch versions
             direction_tensor = torch.load(direction_path, map_location=device)
-                
+            
         # Apply the direction
         edited_latent = latent.clone()
         edited_latent += factor * direction_tensor
         
         # Return the edited latent code if requested
-        if return_latent:
+                if return_latent:
             return edited_latent
         
         # Otherwise generate and return the image
@@ -1482,7 +1482,7 @@ class E4EProcessor:
                 # Fallback for older PyTorch versions
                 direction_tensor = torch.load(direction_path, map_location=edited_latent.device)
                 
-            edited_latent = latent.clone()
+                    edited_latent = latent.clone()
             edited_latent += factor * direction_tensor
             return self._generate_from_latent(edited_latent)
             
@@ -1499,7 +1499,7 @@ class E4EProcessor:
                 direction_tensor = torch.load(direction_path, map_location=latent.device, weights_only=False)
             except TypeError:
                 # Fallback for older PyTorch versions
-                direction_tensor = torch.load(direction_path, map_location=latent.device)
+                            direction_tensor = torch.load(direction_path, map_location=latent.device)
                 
             factors = np.linspace(factor_range[0], factor_range[1], steps)
             images = []
@@ -1511,7 +1511,7 @@ class E4EProcessor:
                 images.append(image)
                 
             return images
-    
+
     def process_directory(self, input_dir, output_dir=None, file_extensions=('.jpg', '.jpeg', '.png')):
         """
         Process all images in a directory, saving each result with a unique filename.
