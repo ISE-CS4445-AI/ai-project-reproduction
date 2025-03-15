@@ -628,7 +628,12 @@ class LatentWeightTrainer:
         # Handle child embeddings - either load from file or extract from images
         if load_embeddings_from and os.path.exists(load_embeddings_from):
             print(f"Loading pre-computed child embeddings from {load_embeddings_from}")
-            embeddings_data = torch.load(load_embeddings_from)
+            try:
+                # First try with weights_only=False for PyTorch 2.6+ compatibility
+                embeddings_data = torch.load(load_embeddings_from, weights_only=False)
+            except TypeError:
+                # Fallback for older PyTorch versions
+                embeddings_data = torch.load(load_embeddings_from)
             stacked_embeddings = embeddings_data['embeddings']
             valid_indices = embeddings_data['indices']
             
@@ -871,7 +876,12 @@ class LatentWeightTrainer:
             LatentWeightGenerator: Loaded model
         """
         load_path = os.path.join(self.save_dir, filename)
-        checkpoint = torch.load(load_path)
+        try:
+            # First try with weights_only=False for PyTorch 2.6+ compatibility
+            checkpoint = torch.load(load_path, weights_only=False)
+        except TypeError:
+            # Fallback for older PyTorch versions
+            checkpoint = torch.load(load_path)
         
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])

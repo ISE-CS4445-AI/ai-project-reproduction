@@ -347,7 +347,13 @@ class E4EInference:
             
             with tqdm(total=1, desc="Loading checkpoint", unit="file") as pbar:
                 # Load on CPU to save GPU memory
-                ckpt = torch.load(self.model_path, map_location='cpu')
+                try:
+                    # First try with weights_only=False to handle PyTorch 2.6+ compatibility
+                    ckpt = torch.load(self.model_path, map_location='cpu', weights_only=False)
+                except TypeError:
+                    # Fallback for older PyTorch versions that don't have weights_only parameter
+                    logger.info("Falling back to legacy torch.load (PyTorch < 2.6)")
+                    ckpt = torch.load(self.model_path, map_location='cpu')
                 pbar.update(1)
             
             load_time = time.time() - start_time
@@ -859,328 +865,284 @@ class E4EEditor:
 
     def get_interfacegan_directions(self):
         """
-        Get available InterFaceGAN directions for the current experiment type.
+        Get the list of available interfacegan directions.
         
         Returns:
-            dict: Dictionary of available directions
+            dict: A dictionary mapping direction names to paths
         """
         if self.interfacegan_directions is not None:
             return self.interfacegan_directions
             
-        if self.setup:
-            base_dir = self.setup.interfacegan_dir
-        else:
-            base_dir = 'editings/interfacegan_directions'
+        # Define the base directory for interfacegan directions
+        interfacegan_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'editings/interfacegan_directions'
+        )
         
-        interfacegan_directions = {
-            'ffhq_encode': {
-                'age': os.path.join(base_dir, 'age.pt'),
-                'smile': os.path.join(base_dir, 'smile.pt'),
-                'pose': os.path.join(base_dir, 'pose.pt')
-            }
+        # Check if provided setup has a path defined
+        if hasattr(self, 'setup') and self.setup is not None:
+            interfacegan_dir = self.setup.interfacegan_dir
+        
+        # Create the directory if it doesn't exist
+        os.makedirs(interfacegan_dir, exist_ok=True)
+        
+        # Map of available directions
+        self.interfacegan_directions = {
+            'age': os.path.join(interfacegan_dir, 'age.pt'),
+            'smile': os.path.join(interfacegan_dir, 'smile.pt'),
+            'pose': os.path.join(interfacegan_dir, 'pose.pt'),
+            'Male': os.path.join(interfacegan_dir, 'Male.pt'),
+            'eyes_open': os.path.join(interfacegan_dir, 'eyes_open.pt'),
+            'glasses': os.path.join(interfacegan_dir, 'glasses.pt'),
+            'beard': os.path.join(interfacegan_dir, 'beard.pt'),
+            'lip_ratio': os.path.join(interfacegan_dir, 'lip_ratio.pt'),
+            'lipstick': os.path.join(interfacegan_dir, 'lipstick.pt'),
+            'face_width': os.path.join(interfacegan_dir, 'face_width.pt'),
+            'bald': os.path.join(interfacegan_dir, 'bald.pt'),
+            'smiling': os.path.join(interfacegan_dir, 'smiling.pt'),
+            'eyeglasses': os.path.join(interfacegan_dir, 'eyeglasses.pt'),
+            'young': os.path.join(interfacegan_dir, 'young.pt'),
+            'big_lips': os.path.join(interfacegan_dir, 'big_lips.pt'),
+            'narrow_eyes': os.path.join(interfacegan_dir, 'narrow_eyes.pt'),
+            'chubby': os.path.join(interfacegan_dir, 'chubby.pt'),
+            'attractive': os.path.join(interfacegan_dir, 'attractive.pt'),
+            'big_nose': os.path.join(interfacegan_dir, 'big_nose.pt'),
+            'pale_skin': os.path.join(interfacegan_dir, 'pale_skin.pt')
         }
         
-        if self.experiment_type in interfacegan_directions:
-            # Verify files exist
-            directions = {}
-            for name, path in interfacegan_directions[self.experiment_type].items():
-                if os.path.isfile(path):
-                    directions[name] = path
-                else:
-                    logging.warning(f"InterFaceGAN direction '{name}' not found at: {path}")
-            
-            self.interfacegan_directions = directions
-            return directions
-        else:
-            self.interfacegan_directions = {}
-            return {}
-    
+        # Check which directions are actually available
+        available_directions = {}
+        for name, path in self.interfacegan_directions.items():
+            if os.path.isfile(path):
+                available_directions[name] = path
+                
+        self.interfacegan_directions = available_directions
+        return available_directions
+
     def apply_interfacegan(self, latent, direction_name, factor=1.0, return_latent=False):
         """
-        Apply an InterFaceGAN direction to a latent code.
+        Apply interfacegan direction to the latent code.
         
         Args:
-            latent (torch.Tensor): Latent code
-            direction_name (str): Name of the direction to apply
-            factor (float): Strength of the edit
-            return_latent (bool): If True, return the edited latent code instead of generating an image
+            latent (torch.Tensor): The latent code to edit
+            direction_name (str): The name of the direction to apply
+            factor (float): The factor to apply the direction with
+            return_latent (bool): Whether to return the edited latent code
             
         Returns:
-            PIL.Image or torch.Tensor: Edited image or edited latent code, depending on return_latent
+            (torch.Tensor or PIL.Image): The edited image or latent code
         """
-        logger = logging.getLogger(__name__)
-        
-        if self.editor is None:
-            raise RuntimeError("Latent editor not initialized. Cannot apply edits.")
-        
+        # Get available directions
         directions = self.get_interfacegan_directions()
-        if not directions or direction_name not in directions:
-            raise ValueError(f"Direction {direction_name} not available for {self.experiment_type}")
         
-        logger.info(f"Applying {direction_name} edit with factor {factor}...")
+        # Check if the direction exists
+        if direction_name not in directions:
+            raise ValueError(
+                f"Direction '{direction_name}' not found. Available directions: {list(directions.keys())}"
+            )
+            
+        # Get the path to the direction
+        direction_path = directions[direction_name]
         
-        # Get original device
-        original_device = latent.device
-        
-        # For StyleGAN2's custom CUDA ops, we must use a GPU
-        # Check if CUDA is available
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is required for applying edits with InterFaceGAN")
-        
-        # Clear any leftover GPU memory before the operation
-        self._clear_gpu_memory()
-        
+        # Load the direction tensor with better error handling
+        device = latent.device
         try:
-            # Move to the preferred device
-            device = torch.device('cuda')
-            
-            # Load direction tensor
-            direction_path = directions[direction_name]
+            # First try with weights_only=False for PyTorch 2.6+ compatibility
+            direction_tensor = torch.load(direction_path, map_location=device, weights_only=False)
+        except TypeError:
+            # Fallback for older PyTorch versions
             direction_tensor = torch.load(direction_path, map_location=device)
-            
-            # Move latent to GPU if it's not already there
-            if latent.device.type != 'cuda':
-                latent = latent.to(device)
-            
-            # When using memory-efficient mode, process in smaller batches
-            if self.memory_efficient:
-                logger.info("Using memory-efficient mode for GPU editing")
                 
-                # Clear GPU memory first
-                self._clear_gpu_memory()
-                
-                # Apply edit
-                edit_latents = latent + direction_tensor * factor
-                
-                # If we only need the latent, return it directly
-                if return_latent:
-                    # Move result back to original device if needed
-                    if edit_latents.device != original_device:
-                        edit_latents = edit_latents.to(original_device)
-                    return edit_latents
-                
-                # Make sure editor generator is entirely on the GPU
-                if hasattr(self.editor, 'generator'):
-                    logger.info("Moving editor generator to CUDA...")
-                    # Move entire generator to CUDA using our helper
-                    self.editor.generator = self._ensure_model_on_device(self.editor.generator, device)
-                
-                # Process the edit with the latent editor on GPU
-                with torch.no_grad():
-                    # Use the built-in editor for the edit, which uses custom CUDA ops
-                    if hasattr(self.editor, 'apply_interfacegan'):
-                        # First make sure latent & direction are on the same device as the editor
-                        if hasattr(self.editor, 'generator'):
-                            editor_device = next(self.editor.generator.parameters()).device
-                            latent = latent.to(editor_device)
-                            direction_tensor = direction_tensor.to(editor_device)
-                            
-                        result_image = self.editor.apply_interfacegan(latent, direction_tensor, factor=factor)
-                    else:
-                        # Direct approach using generator
-                        if hasattr(self.editor, 'generator'):
-                            # Apply edit directly
-                            edit_latents = latent + direction_tensor * factor
-                            
-                            # Generate image
-                            images, _ = self.editor.generator(
-                                [edit_latents], 
-                                randomize_noise=False, 
-                                input_is_latent=True
-                            )
-                            result_image = self.tensor2im(images[0])
-                        else:
-                            raise RuntimeError("Editor does not have generator attribute")
-                
-                # Move result back to original device if needed
-                if isinstance(result_image, torch.Tensor) and result_image.device != original_device:
-                    result_image = result_image.to(original_device)
-                
-                # Clear GPU memory after processing
-                self._clear_gpu_memory()
-                
-                return result_image
-            else:
-                # Standard approach
-                # Apply edit directly for consistent latent handling
-                edit_latents = latent + direction_tensor * factor
-                
-                # If we only need the latent, return it directly
-                if return_latent:
-                    # Move result back to original device if needed
-                    if edit_latents.device != original_device:
-                        edit_latents = edit_latents.to(original_device)
-                    return edit_latents
-                
-                # Make sure editor generator is entirely on the GPU
-                if hasattr(self.editor, 'generator'):
-                    logger.info("Moving editor generator to CUDA...")
-                    # Move entire generator to CUDA using our helper
-                    self.editor.generator = self._ensure_model_on_device(self.editor.generator, device)
-                
-                with torch.no_grad():
-                    # First make sure latent & direction are on the same device as the editor
-                    if hasattr(self.editor, 'generator'):
-                        editor_device = next(self.editor.generator.parameters()).device
-                        latent = latent.to(editor_device)
-                        direction_tensor = direction_tensor.to(editor_device)
-                
-                    # Use the built-in editor for the edit
-                    result_image = self.editor.apply_interfacegan(latent, direction_tensor, factor=factor)
-                
-                # Move result back to original device if needed
-                if isinstance(result_image, torch.Tensor) and result_image.device != original_device:
-                    result_image = result_image.to(original_device)
-                
-                return result_image
-                
-        except RuntimeError as e:
-            if 'out of memory' in str(e):
-                logger.warning("Out of memory during generation. Trying with aggressive memory management...")
-                
-                # Clear all GPU memory
-                self._clear_gpu_memory()
-                
-                # Only keep the essential parts of the model on GPU
-                latent = latent.to('cuda')
-                direction_tensor = torch.load(direction_path, map_location='cuda')
-                
-                # Apply the edit directly
-                edit_latents = latent + direction_tensor * factor
-                
-                # If we only need the latent, return it directly
-                if return_latent:
-                    # Move result back to original device if needed
-                    if edit_latents.device != original_device:
-                        edit_latents = edit_latents.to(original_device)
-                    return edit_latents
-                
-                # Run generation with minimal memory usage
-                with torch.no_grad():
-                    try:
-                        # Use the built-in editor for the edit, but with minimal memory
-                        if hasattr(self.editor, 'generator'):
-                            # Move fully to GPU and ensure consistency using our helper
-                            self.editor.generator = self._ensure_model_on_device(self.editor.generator, 'cuda')
-                            
-                            images, _ = self.editor.generator([edit_latents], randomize_noise=False, input_is_latent=True)
-                            result_image = self.tensor2im(images[0])
-                            
-                            # Clear GPU memory
-                            self._clear_gpu_memory()
-                            
-                            return result_image
-                        else:
-                            raise RuntimeError("Editor does not have generator attribute")
-                    except Exception as inner_e:
-                        logger.error(f"Error during memory-efficient editing: {str(inner_e)}")
-                        raise
-            else:
-                raise
+        # Apply the direction
+        edited_latent = latent.clone()
+        edited_latent += factor * direction_tensor
+        
+        # Return the edited latent code if requested
+        if return_latent:
+            return edited_latent
+        
+        # Otherwise generate and return the image
+        return self._generate_from_latent(edited_latent)
     
     def apply_interfacegan_range(self, latent, direction_name, factor_range=(-5, 5), steps=10):
         """
-        Apply an InterFaceGAN direction with a range of factors.
+        Apply a range of factors for an interfacegan direction to create a progression.
         
         Args:
-            latent (torch.Tensor): Latent code
-            direction_name (str): Name of the direction to apply
-            factor_range (tuple): Range of factors (min, max)
+            latent (torch.Tensor): The latent code to edit
+            direction_name (str): The name of the direction to apply
+            factor_range (tuple): The range of factors to apply (min, max)
             steps (int): Number of steps in the range
             
         Returns:
-            list: List of edited images as PIL Images
+            list: A list of PIL.Image objects showing the progression
         """
-        logger = logging.getLogger(__name__)
-        
-        if self.editor is None:
-            raise RuntimeError("Latent editor not initialized. Cannot apply edits.")
-        
+        # Get available directions
         directions = self.get_interfacegan_directions()
-        if not directions or direction_name not in directions:
-            raise ValueError(f"Direction {direction_name} not available for {self.experiment_type}")
         
-        logger.info(f"Applying {direction_name} edit with factor range {factor_range} and {steps} steps...")
+        # Check if the direction exists
+        if direction_name not in directions:
+            raise ValueError(
+                f"Direction '{direction_name}' not found. Available directions: {list(directions.keys())}"
+            )
+            
+        # Get the path to the direction
+        direction_path = directions[direction_name]
         
-        # Get original device
-        original_device = latent.device
+        # Move latent to CPU as we will be creating many copies
+        latent_cpu = latent.detach().cpu()
         
-        # For StyleGAN2's custom CUDA ops, we must use a GPU
-        # Check if CUDA is available
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is required for applying edits with InterFaceGAN")
+        # Determine the device to use for inference
+        device = torch.device('cuda' if torch.cuda.is_available() and not self.memory_efficient else 'cpu')
         
-        # Clear any leftover GPU memory before the operation
-        self._clear_gpu_memory()
-        
+        # Load the direction tensor with better error handling
         try:
-            # Move to the preferred device
-            device = torch.device('cuda')
-            
-            # Load direction tensor
-            direction_path = directions[direction_name]
+            # First try with weights_only=False for PyTorch 2.6+ compatibility
+            direction_tensor = torch.load(direction_path, map_location=device, weights_only=False)
+        except TypeError:
+            # Fallback for older PyTorch versions
             direction_tensor = torch.load(direction_path, map_location=device)
+        
+        # Create a range of factors
+        factors = np.linspace(factor_range[0], factor_range[1], steps)
+        
+        # Apply each factor and generate images
+        images = []
+        for factor in factors:
+            # Apply the direction
+            edited_latent = latent_cpu.clone().to(device)
+            edited_latent += factor * direction_tensor
             
-            # Move latent to GPU if it's not already there
-            if latent.device.type != 'cuda':
-                latent = latent.to(device)
+            # Generate the image
+            image = self._generate_from_latent(edited_latent)
+            images.append(image)
             
-            # Generate factors
-            min_factor, max_factor = factor_range
-            factors = torch.linspace(min_factor, max_factor, steps)
-            
-            # Process each factor
-            results = []
-            for factor in factors:
-                # Clear memory between iterations
-                self._clear_gpu_memory()
-                
-                # Apply the edit
-                try:
-                    edited_image = self.apply_interfacegan(latent, direction_name, factor.item())
-                    results.append(edited_image)
-                except Exception as e:
-                    logger.error(f"Error applying edit with factor {factor.item()}: {str(e)}")
-                    # Continue with next factor
-            
-            # Return the results
-            return results
-            
-        except Exception as e:
-            logger.error(f"Error applying edit range: {str(e)}")
-            # Clean up memory
-            self._clear_gpu_memory()
-            raise
-
-    def _ensure_model_on_device(self, model, device):
+            # Clear GPU memory if in memory-efficient mode
+            if self.memory_efficient:
+                edited_latent = edited_latent.cpu()
+                torch.cuda.empty_cache()
+        
+        return images
+    
+    def apply_ganspace(self, latent, direction_names):
         """
-        Ensure all parameters of a model are on the same device.
+        Apply ganspace edit to the latent code.
         
         Args:
-            model (torch.nn.Module): Model to check
-            device (torch.device): Target device
+            latent (torch.Tensor): The latent code to edit
+            direction_names (list): List of direction names to apply
             
         Returns:
-            torch.nn.Module: Model with all parameters on the target device
+            PIL.Image: Edited image
         """
-        logger = logging.getLogger(__name__)
+        # Check if ganspace directions are available
+        if self.ganspace_directions is None:
+            raise RuntimeError("Ganspace directions not loaded. Please load ganspace directions first.")
         
-        # Move the model to the target device
-        model = model.to(device)
+        # Get the corresponding direction tensors
+        direction_tensors = [self.ganspace_directions[name] for name in direction_names]
         
-        # Check if all parameters are on the target device
-        for name, param in model.named_parameters():
-            if param.device != device:
-                logger.warning(f"Parameter {name} is on {param.device}, moving to {device}")
-                param.data = param.data.to(device)
+        # Apply the ganspace edit
+        edited_latent = latent.clone()
+        for direction_tensor in direction_tensors:
+            edited_latent += direction_tensor
         
-        # Check if all buffers are on the target device
-        for name, buffer in model.named_buffers():
-            if buffer.device != device:
-                logger.warning(f"Buffer {name} is on {buffer.device}, moving to {device}")
-                buffer.data = buffer.data.to(device)
+        return self._generate_from_latent(edited_latent)
+    
+    def apply_sefa(self, latent, indices, start_distance, end_distance, step):
+        """
+        Apply sefa edit to the latent code.
         
-        return model
+        Args:
+            latent (torch.Tensor): The latent code to edit
+            indices (list): List of indices to apply the edit to
+            start_distance (float): Start distance for the edit
+            end_distance (float): End distance for the edit
+            step (float): Step size for the edit
+            
+        Returns:
+            PIL.Image: Edited image
+        """
+        # Check if sefa directions are available
+        if self.sefa_directions is None:
+            raise RuntimeError("Sefa directions not loaded. Please load sefa directions first.")
+        
+        # Get the corresponding direction tensors
+        direction_tensors = [self.sefa_directions[index] for index in indices]
+        
+        # Apply the sefa edit
+        edited_latent = latent.clone()
+        for direction_tensor in direction_tensors:
+            edited_latent += direction_tensor
+        
+        return self._generate_from_latent(edited_latent)
+    
+    def edit_image(self, latent, edit_type, **kwargs):
+        """
+        Edit a latent code using the specified edit type.
+        
+        Args:
+            latent (torch.Tensor): The latent code to edit
+            edit_type (str): The type of edit to apply
+            **kwargs: Additional arguments for the specific edit type
+            
+        Returns:
+            PIL.Image or list: The edited image(s)
+        """
+        if edit_type == 'interfacegan':
+            direction_name = kwargs.get('direction', 'age')
+            factor = kwargs.get('factor', 1.0)
+            return self.apply_interfacegan(latent, direction_name, factor)
+            
+        elif edit_type == 'interfacegan_range':
+            direction_name = kwargs.get('direction', 'age')
+            factor_range = kwargs.get('factor_range', (-5, 5))
+            steps = kwargs.get('steps', 10)
+            return self.apply_interfacegan_range(latent, direction_name, factor_range, steps)
+            
+        elif edit_type == 'custom_direction':
+            direction_path = kwargs.get('direction_path', None)
+            factor = kwargs.get('factor', 1.0)
+            
+            if direction_path is None or not os.path.isfile(direction_path):
+                raise ValueError("Must provide a valid path to a direction tensor")
+                
+            try:
+                # First try with weights_only=False for PyTorch 2.6+ compatibility
+                direction_tensor = torch.load(direction_path, map_location=edited_latent.device, weights_only=False)
+            except TypeError:
+                # Fallback for older PyTorch versions
+                direction_tensor = torch.load(direction_path, map_location=edited_latent.device)
+                
+            edited_latent = latent.clone()
+            edited_latent += factor * direction_tensor
+            return self._generate_from_latent(edited_latent)
+            
+        elif edit_type == 'custom_direction_range':
+            direction_path = kwargs.get('direction_path', None)
+            factor_range = kwargs.get('factor_range', (-5, 5))
+            steps = kwargs.get('steps', 10)
+            
+            if direction_path is None or not os.path.isfile(direction_path):
+                raise ValueError("Must provide a valid path to a direction tensor")
+                
+            try:
+                # First try with weights_only=False for PyTorch 2.6+ compatibility
+                direction_tensor = torch.load(direction_path, map_location=latent.device, weights_only=False)
+            except TypeError:
+                # Fallback for older PyTorch versions
+                direction_tensor = torch.load(direction_path, map_location=latent.device)
+                
+            factors = np.linspace(factor_range[0], factor_range[1], steps)
+            images = []
+            
+            for factor in factors:
+                edited_latent = latent.clone()
+                edited_latent += factor * direction_tensor
+                image = self._generate_from_latent(edited_latent)
+                images.append(image)
+                
+            return images
 
 
 class E4EProcessor:
@@ -1485,134 +1447,71 @@ class E4EProcessor:
     
     def edit_image(self, latent, edit_type, **kwargs):
         """
-        Apply an edit to a latent code.
+        Edit a latent code using the specified edit type.
         
         Args:
-            latent (torch.Tensor): Latent code
-            edit_type (str): Type of edit ('interfacegan', 'ganspace', 'sefa')
+            latent (torch.Tensor): The latent code to edit
+            edit_type (str): The type of edit to apply
             **kwargs: Additional arguments for the specific edit type
-                return_single_image (bool): If True, return only a single image instead of concatenated images
-                multi_directions (list): List of dictionaries containing direction_name and factor pairs
-                    e.g., [{'direction_name': 'age', 'factor': -3.0}, {'direction_name': 'smile', 'factor': 2.0}]
             
         Returns:
-            PIL.Image: Edited image
+            PIL.Image or list: The edited image(s)
         """
-        # Clear GPU memory before editing
-        self._clear_gpu_memory()
-        
-        # Get original device
-        original_device = latent.device
-        
-        # Use a GPU memory-efficient approach
-        use_memory_efficient = kwargs.get('use_memory_efficient', self.memory_efficient)
-        
-        # Check if we should return a single image
-        return_single_image = kwargs.get('return_single_image', False)
-        
-        # Set memory-efficient mode for the editor
-        self.editor.set_memory_efficient(use_memory_efficient)
-        
-        try:
-            # Apply the edit based on the edit type
-            if edit_type == 'interfacegan':
-                # Check if we're doing multiple direction edits
-                multi_directions = kwargs.get('multi_directions', None)
-                
-                if multi_directions is not None and isinstance(multi_directions, list) and len(multi_directions) > 0:
-                    # Apply multiple edits sequentially
-                    logging.info(f"Applying multiple InterfaceGAN edits: {[d['direction_name'] for d in multi_directions]}")
-                    
-                    # Start with the original latent
-                    edited_latent = latent.clone()
-                    
-                    # Apply each direction sequentially
-                    for direction_info in multi_directions:
-                        direction_name = direction_info.get('direction_name')
-                        factor = direction_info.get('factor', 0.0)
-                        
-                        if not direction_name:
-                            continue
-                            
-                        logging.info(f"Applying {direction_name} edit with factor {factor}")
-                        
-                        # Get the direction tensor
-                        directions = self.editor.get_interfacegan_directions()
-                        if direction_name not in directions:
-                            logging.warning(f"Direction {direction_name} not found, skipping...")
-                            continue
-                            
-                        direction_path = directions[direction_name]
-                        direction_tensor = torch.load(direction_path, map_location=edited_latent.device)
-                        
-                        # Apply the edit to the latent
-                        edited_latent = edited_latent + factor * direction_tensor
-                    
-                    # Generate image from the final edited latent
-                    edited_image = self.combiner.generate_from_latent(edited_latent)
-                    
-                else:
-                    # Original single-direction code
-                    direction_name = kwargs.get('direction_name', 'age')
-                    factor = kwargs.get('factor', -3.0)
-                    factor_range = kwargs.get('factor_range', None)
-                    
-                    logging.info(f"Applying interfacegan edit: {direction_name}, factor: {factor}")
-                    
-                    if factor_range is not None:
-                        edited_images = self.editor.apply_interfacegan_range(latent, direction_name, factor_range)
-                        # If return_single_image is True, only return the first image
-                        if return_single_image and isinstance(edited_images, list) and len(edited_images) > 0:
-                            edited_image = edited_images[0]
-                        else:
-                            edited_image = edited_images
-                    else:
-                        # Apply the edit to get a concatenated image
-                        edited_image_concat = self.editor.apply_interfacegan(latent, direction_name, factor)
-                        
-                        # If we need a single image, generate it directly instead of using the concatenated version
-                        if return_single_image:
-                            # Apply the edit to the latent
-                            directions = self.editor.get_interfacegan_directions()
-                            direction_path = directions[direction_name]
-                            direction_tensor = torch.load(direction_path, map_location=latent.device)
-                            edited_latent = latent + factor * direction_tensor
-                            
-                            # Generate image directly from latent
-                            edited_image = self.combiner.generate_from_latent(edited_latent)
-                        else:
-                            edited_image = edited_image_concat
-                
-                # Clear GPU memory after editing
-                self._clear_gpu_memory()
-                
-                return edited_image
+        if edit_type == 'interfacegan':
+            direction_name = kwargs.get('direction', 'age')
+            factor = kwargs.get('factor', 1.0)
+            return self.apply_interfacegan(latent, direction_name, factor)
             
-            elif edit_type == 'ganspace':
-                direction_names = kwargs.get('direction_names', ['eye_openness', 'smile'])
-                logging.info(f"Applying ganspace edit with directions: {direction_names}")
-                return self.editor.apply_ganspace(latent, direction_names)
+        elif edit_type == 'interfacegan_range':
+            direction_name = kwargs.get('direction', 'age')
+            factor_range = kwargs.get('factor_range', (-5, 5))
+            steps = kwargs.get('steps', 10)
+            return self.apply_interfacegan_range(latent, direction_name, factor_range, steps)
             
-            elif edit_type == 'sefa':
-                indices = kwargs.get('indices', [2, 3, 4, 5])
-                start_distance = kwargs.get('start_distance', 0.0)
-                end_distance = kwargs.get('end_distance', 15.0)
-                step = kwargs.get('step', 3)
+        elif edit_type == 'custom_direction':
+            direction_path = kwargs.get('direction_path', None)
+            factor = kwargs.get('factor', 1.0)
+            
+            if direction_path is None or not os.path.isfile(direction_path):
+                raise ValueError("Must provide a valid path to a direction tensor")
                 
-                logging.info(f"Applying sefa edit with indices: {indices}")
-                return self.editor.apply_sefa(latent, indices, start_distance, end_distance, step)
+            try:
+                # First try with weights_only=False for PyTorch 2.6+ compatibility
+                direction_tensor = torch.load(direction_path, map_location=edited_latent.device, weights_only=False)
+            except TypeError:
+                # Fallback for older PyTorch versions
+                direction_tensor = torch.load(direction_path, map_location=edited_latent.device)
+                
+            edited_latent = latent.clone()
+            edited_latent += factor * direction_tensor
+            return self._generate_from_latent(edited_latent)
             
-            else:
-                raise ValueError(f"Edit type {edit_type} not supported")
-        
-        except Exception as e:
-            logging.error(f"Error applying edit: {str(e)}")
-            self._clear_gpu_memory()  # Make sure to clean up
-            raise
-        finally:
-            # Clear GPU memory after editing
-            self._clear_gpu_memory()
-
+        elif edit_type == 'custom_direction_range':
+            direction_path = kwargs.get('direction_path', None)
+            factor_range = kwargs.get('factor_range', (-5, 5))
+            steps = kwargs.get('steps', 10)
+            
+            if direction_path is None or not os.path.isfile(direction_path):
+                raise ValueError("Must provide a valid path to a direction tensor")
+                
+            try:
+                # First try with weights_only=False for PyTorch 2.6+ compatibility
+                direction_tensor = torch.load(direction_path, map_location=latent.device, weights_only=False)
+            except TypeError:
+                # Fallback for older PyTorch versions
+                direction_tensor = torch.load(direction_path, map_location=latent.device)
+                
+            factors = np.linspace(factor_range[0], factor_range[1], steps)
+            images = []
+            
+            for factor in factors:
+                edited_latent = latent.clone()
+                edited_latent += factor * direction_tensor
+                image = self._generate_from_latent(edited_latent)
+                images.append(image)
+                
+            return images
+    
     def process_directory(self, input_dir, output_dir=None, file_extensions=('.jpg', '.jpeg', '.png')):
         """
         Process all images in a directory, saving each result with a unique filename.
