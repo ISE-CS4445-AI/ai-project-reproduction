@@ -913,7 +913,7 @@ class E4EEditor:
         # Check which directions are actually available
         available_directions = {}
         for name, path in self.interfacegan_directions.items():
-                if os.path.isfile(path):
+            if os.path.isfile(path):
                 available_directions[name] = path
                 
         self.interfacegan_directions = available_directions
@@ -958,7 +958,7 @@ class E4EEditor:
         edited_latent += factor * direction_tensor
         
         # Return the edited latent code if requested
-                if return_latent:
+        if return_latent:
             return edited_latent
         
         # Otherwise generate and return the image
@@ -1482,7 +1482,7 @@ class E4EProcessor:
                 # Fallback for older PyTorch versions
                 direction_tensor = torch.load(direction_path, map_location=edited_latent.device)
                 
-                    edited_latent = latent.clone()
+            edited_latent = latent.clone()
             edited_latent += factor * direction_tensor
             return self._generate_from_latent(edited_latent)
             
@@ -1499,7 +1499,7 @@ class E4EProcessor:
                 direction_tensor = torch.load(direction_path, map_location=latent.device, weights_only=False)
             except TypeError:
                 # Fallback for older PyTorch versions
-                            direction_tensor = torch.load(direction_path, map_location=latent.device)
+                direction_tensor = torch.load(direction_path, map_location=latent.device)
                 
             factors = np.linspace(factor_range[0], factor_range[1], steps)
             images = []
