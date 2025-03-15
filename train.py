@@ -90,9 +90,9 @@ def get_family(family_id, base_path, csv_path):
         return None
 
 # Configure paths - update these to match your system
-BASE_PATH = "/content/drive/MyDrive/Child Generator/AlignedTest2"  # Base path for images
-CSV_PATH = "/content/drive/MyDrive/Child Generator/CSVs/checkpoint10.csv"  # Path to family data CSV
-OUTPUT_DIR = '/content/images/outputs'  # Output directory for generated images
+BASE_PATH = "./AlignedTest2"  # Base path for images
+CSV_PATH = "./CSVs/checkpoint10.csv"  # Path to family data CSV
+OUTPUT_DIR = './outputs'  # Output directory for generated images
 E4E_BASE_DIR = './e4e'  # Base directory for E4E model
 LATENT_DIR = './latents'  # Directory containing pre-computed latent codes
 EMBEDDINGS_DIR = './embeddings'  # Directory for storing face embeddings
@@ -446,9 +446,9 @@ def main():
         'output_dir': 'outputs',
         'model_dir': 'family_models',
         'embeddings_dir': 'embeddings',
-        'base_path': '/path/to/images',  # Update with your image directory
-        'csv_path': '/path/to/family_data.csv',  # Update with your CSV file
-        'latent_dir': '/path/to/latents',  # Update with your latents directory
+        'base_path': './AlignedTest2',  # Updated with correct path
+        'csv_path': './CSVs/checkpoint10.csv',  # Updated with correct path
+        'latent_dir': './latents',  # Updated with correct path
         'learning_rate': 0.00001,
         'num_epochs': 80,
         'batch_size': 4,

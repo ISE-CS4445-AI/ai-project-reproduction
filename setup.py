@@ -6,6 +6,7 @@ import requests
 from tqdm import tqdm
 import gdown  # For Google Drive folder download
 import zipfile  # For extracting zip files
+import shutil  # For directory operations
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -121,6 +122,17 @@ def download_models():
             'path': './latents.zip',  # Added ./ to ensure there's a directory component
             'is_zip': True,
             'extract_to': 'latents'
+        },
+        'checkpoint_csv': {
+            'id': '1-MLAiuDcROAkd7yzrjKQpsrChTU8_Wh9',
+            'path': 'CSVs/checkpoint10.csv',
+            'is_zip': False
+        },
+        'aligned_test': {
+            'id': '1VoKZyFXG8HpTbfgMtJ24qsE9J81tZvte',
+            'path': './AlignedTest2.zip',
+            'is_zip': True,
+            'extract_to': '.'
         }
     }
     
@@ -135,13 +147,29 @@ def download_models():
                 logger.info(f"Extracting {model_name}...")
                 run_command(f"bzip2 -dk {model_info['path']}", f"Extracting {model_name}")
     
+    # Create CSVs directory if it doesn't exist
+    os.makedirs('CSVs', exist_ok=True)
+    
     # Download pre-computed data
     for data_name, data_info in precomputed_data.items():
         if data_info['is_zip']:
             # For zip files, check if the extraction directory already has files
             extract_dir = data_info.get('extract_to', os.path.dirname(data_info['path']))
             if os.path.exists(extract_dir) and os.listdir(extract_dir):
-                logger.info(f"{extract_dir} directory already contains files, skipping download of {data_name}.")
+                if extract_dir == 'latents':
+                    logger.info(f"{extract_dir} directory already contains files, skipping download of {data_name}.")
+                elif extract_dir == '.' and os.path.exists('AlignedTest2'):
+                    logger.info(f"AlignedTest2 directory already exists, skipping download of {data_name}.")
+                else:
+                    # Download and extract the zip file
+                    logger.info(f"Downloading pre-computed {data_name}...")
+                    download_gdrive_file(data_info['id'], data_info['path'], f"Downloading {data_name}")
+                    
+                    # Extract the zip file
+                    extract_zip(data_info['path'], extract_dir)
+                    
+                    # Clean up the zip file
+                    os.remove(data_info['path'])
             else:
                 # Download and extract the zip file
                 logger.info(f"Downloading pre-computed {data_name}...")
@@ -174,6 +202,7 @@ def create_directories():
         'family_models',
         'embeddings',
         'latents',
+        'CSVs',
         'sample_images/fathers',
         'sample_images/mothers',
         'sample_images/children'
@@ -182,6 +211,33 @@ def create_directories():
     for directory in directories:
         os.makedirs(directory, exist_ok=True)
         logger.info(f"Created directory: {directory}")
+
+def update_train_py():
+    """Update the train.py file to use the correct paths."""
+    logger.info("Updating train.py with correct paths...")
+    
+    train_py_path = "train.py"
+    if os.path.exists(train_py_path):
+        with open(train_py_path, 'r') as f:
+            content = f.read()
+        
+        # Update the paths
+        content = content.replace(
+            "'/content/drive/MyDrive/Child Generator/AlignedTest2'", 
+            "'./AlignedTest2'"
+        )
+        content = content.replace(
+            "'/content/drive/MyDrive/Child Generator/CSVs/checkpoint10.csv'", 
+            "'./CSVs/checkpoint10.csv'"
+        )
+        
+        # Write the updated content back
+        with open(train_py_path, 'w') as f:
+            f.write(content)
+        
+        logger.info("Successfully updated paths in train.py")
+    else:
+        logger.warning("train.py not found. Please update the paths manually.")
 
 def main():
     logger.info("Starting setup...")
@@ -198,11 +254,16 @@ def main():
     # Download model files and pre-computed data
     download_models()
     
+    # Update train.py with correct paths
+    update_train_py()
+    
     logger.info("""
 Setup complete! The system is ready to go:
 1. Pre-computed latents and child embeddings have been downloaded
-2. All required models have been installed
-3. Directory structure has been created
+2. AlignedTest2 folder and checkpoint CSV have been downloaded
+3. All required models have been installed
+4. Directory structure has been created
+5. train.py has been updated with correct paths
 
 To start training:
 1. Place your family images in the appropriate directories (if you plan to use your own images):
