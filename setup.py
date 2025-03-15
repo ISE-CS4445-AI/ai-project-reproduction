@@ -28,7 +28,7 @@ def download_file(url, destination, description=None):
     progress_bar.close()
 
 def download_gdrive_file(file_id, destination, description=None):
-    """Download a single file from Google Drive."""
+    """Download a single file from Google Drive with proper handling of confirmation pages."""
     logger.info(f"Downloading file from Google Drive to {destination}...")
     
     # Create destination directory if needed (handling the case where dirname is empty)
@@ -44,12 +44,47 @@ def download_gdrive_file(file_id, destination, description=None):
         run_command('pip install gdown', "Installing gdown")
         import gdown
     
-    # Download the file
+    # Download the file with proper handling of confirmation prompts
     url = f"https://drive.google.com/uc?id={file_id}"
     desc = description if description else os.path.basename(destination)
-    gdown.download(url, destination, quiet=False)
     
-    logger.info(f"Successfully downloaded {desc} to {destination}")
+    try:
+        # First attempt - if this fails with warning page, the except block will handle it
+        logger.info(f"Downloading {desc} directly...")
+        gdown.download(url, destination, quiet=False, fuzzy=True)  # fuzzy=True helps with warning pages
+        
+        # Check if file is HTML warning page (file size would be small)
+        if os.path.exists(destination) and os.path.getsize(destination) < 50000:  # Less than 50KB
+            with open(destination, 'r', errors='ignore') as f:
+                content = f.read(200)
+                if '<!DOCTYPE html>' in content or '<html>' in content:
+                    logger.warning("Detected HTML warning page instead of model file. Retrying with special flags...")
+                    os.remove(destination)  # Remove the HTML file
+                    raise Exception("Got HTML warning page instead of file")
+        
+        logger.info(f"Successfully downloaded {desc} to {destination}")
+    except Exception as e:
+        logger.warning(f"Standard download failed: {e}. Trying with force-cookies flag...")
+        # Force download using special flags to bypass warning page
+        gdown.download(url, destination, quiet=False, fuzzy=True, use_cookies=False)
+        
+        # Check again for HTML content
+        if os.path.exists(destination):
+            with open(destination, 'r', errors='ignore') as f:
+                content = f.read(200)
+                if '<!DOCTYPE html>' in content or '<html>' in content:
+                    logger.error("Still getting HTML warning page. Trying one last method...")
+                    os.remove(destination)  # Remove the HTML file
+                    
+                    # Try one more time with a different approach
+                    output = subprocess.check_output(
+                        f"gdown --id {file_id} -O {destination} --fuzzy --no-cookies",
+                        shell=True,
+                        stderr=subprocess.STDOUT
+                    )
+                    logger.info(f"gdown output: {output.decode('utf-8', errors='ignore')}")
+                
+        logger.info(f"Successfully downloaded {desc} to {destination} (retry method)")
 
 def extract_zip(zip_path, extract_to):
     """Extract a zip file to the specified directory."""
@@ -101,7 +136,7 @@ def download_models():
     # Required model files
     models = {
         'e4e_ffhq_encode': {
-            'url': 'https://drive.google.com/uc?id=1cUv_reLE6k3604or78EranS7XzuVMWeO',
+            'id': '1cUv_reLE6k3604or78EranS7XzuVMWeO',
             'path': 'pretrained_models/e4e_ffhq_encode.pt'
         },
         'shape_predictor': {
@@ -144,7 +179,13 @@ def download_models():
     for model_name, model_info in models.items():
         if not os.path.exists(model_info['path']):
             logger.info(f"Downloading {model_name}...")
-            download_file(model_info['url'], model_info['path'], f"Downloading {model_name}")
+            
+            if model_name == 'e4e_ffhq_encode':
+                # Use download_gdrive_file for Google Drive downloads
+                download_gdrive_file(model_info['id'], model_info['path'], f"Downloading {model_name}")
+            else:
+                # Use regular download for standard URLs
+                download_file(model_info['url'], model_info['path'], f"Downloading {model_name}")
             
             if model_info['path'].endswith('.bz2'):
                 logger.info(f"Extracting {model_name}...")
