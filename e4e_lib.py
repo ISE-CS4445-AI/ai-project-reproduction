@@ -14,15 +14,32 @@ Main components:
 import os
 import sys
 import time
-import glob
+import importlib
+import logging
+from argparse import Namespace
 import numpy as np
-from PIL import Image
 import torch
 import torchvision.transforms as transforms
-from argparse import Namespace
-from typing import Dict, List, Tuple, Union, Optional
-import logging
 from tqdm import tqdm
+from PIL import Image, ImageDraw, ImageFont
+
+def load_tensor_with_weights_workaround(path, map_location=None):
+    """
+    Helper function to load a tensor file with handling for PyTorch 2.6+ changes.
+    
+    Args:
+        path (str): Path to the tensor file
+        map_location: Device mapping function or string
+        
+    Returns:
+        torch.Tensor: Loaded tensor
+    """
+    try:
+        # First try with weights_only=False to handle PyTorch 2.6+ changes
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        # Fall back to default for older PyTorch versions that don't have weights_only parameter
+        return torch.load(path, map_location=map_location)
 
 
 class E4ESetup:
@@ -347,7 +364,13 @@ class E4EInference:
             
             with tqdm(total=1, desc="Loading checkpoint", unit="file") as pbar:
                 # Load on CPU to save GPU memory
-                ckpt = torch.load(self.model_path, map_location='cpu')
+                try:
+                    # First try with weights_only=False to handle PyTorch 2.6+ changes
+                    ckpt = torch.load(self.model_path, map_location='cpu', weights_only=False)
+                except TypeError:
+                    # Fall back to default for older PyTorch versions that don't have weights_only parameter
+                    logger.info("Using older PyTorch version without weights_only parameter")
+                    ckpt = torch.load(self.model_path, map_location='cpu')
                 pbar.update(1)
             
             load_time = time.time() - start_time
@@ -936,7 +959,7 @@ class E4EEditor:
             
             # Load direction tensor
             direction_path = directions[direction_name]
-            direction_tensor = torch.load(direction_path, map_location=device)
+            direction_tensor = load_tensor_with_weights_workaround(direction_path, map_location=device)
             
             # Move latent to GPU if it's not already there
             if latent.device.type != 'cuda':
@@ -1119,7 +1142,7 @@ class E4EEditor:
             
             # Load direction tensor
             direction_path = directions[direction_name]
-            direction_tensor = torch.load(direction_path, map_location=device)
+            direction_tensor = load_tensor_with_weights_workaround(direction_path, map_location=device)
             
             # Move latent to GPU if it's not already there
             if latent.device.type != 'cuda':
@@ -1543,7 +1566,7 @@ class E4EProcessor:
                             continue
                             
                         direction_path = directions[direction_name]
-                        direction_tensor = torch.load(direction_path, map_location=edited_latent.device)
+                        direction_tensor = load_tensor_with_weights_workaround(direction_path, map_location=edited_latent.device)
                         
                         # Apply the edit to the latent
                         edited_latent = edited_latent + factor * direction_tensor
@@ -1575,7 +1598,7 @@ class E4EProcessor:
                             # Apply the edit to the latent
                             directions = self.editor.get_interfacegan_directions()
                             direction_path = directions[direction_name]
-                            direction_tensor = torch.load(direction_path, map_location=latent.device)
+                            direction_tensor = load_tensor_with_weights_workaround(direction_path, map_location=latent.device)
                             edited_latent = latent + factor * direction_tensor
                             
                             # Generate image directly from latent

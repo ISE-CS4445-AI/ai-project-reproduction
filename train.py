@@ -12,6 +12,24 @@ import logging
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+def load_tensor_with_weights_workaround(path, map_location=None):
+    """
+    Helper function to load a tensor file with handling for PyTorch 2.6+ changes.
+    
+    Args:
+        path (str): Path to the tensor file
+        map_location: Device mapping function or string
+        
+    Returns:
+        torch.Tensor: Loaded tensor
+    """
+    try:
+        # First try with weights_only=False to handle PyTorch 2.6+ changes
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        # Fall back to default for older PyTorch versions that don't have weights_only parameter
+        return torch.load(path, map_location=map_location)
+
 from visualization_utils import (
     plot_training_history,
     visualize_family_generation,
@@ -211,14 +229,14 @@ for i in range(num_latent_pairs):
     mother_latent_path = os.path.join(LATENT_DIR, f'mother_latent_{i}.pt')
     
     try:
-        father_latent = torch.load(father_latent_path)
+        father_latent = load_tensor_with_weights_workaround(father_latent_path)
         father_latents.append(father_latent)
     except Exception as e:
         print(f"Error loading father latent {father_latent_path}: {e}")
         father_latents.append(None)
         
     try:
-        mother_latent = torch.load(mother_latent_path)
+        mother_latent = load_tensor_with_weights_workaround(mother_latent_path)
         mother_latents.append(mother_latent)
     except Exception as e:
         print(f"Error loading mother latent {mother_latent_path}: {e}")
