@@ -15,7 +15,7 @@ def download_file(url, destination, description=None):
     response = requests.get(url, stream=True)
     total_size = int(response.headers.get('content-length', 0))
     
-    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    os.makedirs(os.path.dirname(destination) or '.', exist_ok=True)
     
     desc = description if description else os.path.basename(destination)
     progress_bar = tqdm(total=total_size, unit='iB', unit_scale=True, desc=desc)
@@ -30,8 +30,10 @@ def download_gdrive_file(file_id, destination, description=None):
     """Download a single file from Google Drive."""
     logger.info(f"Downloading file from Google Drive to {destination}...")
     
-    # Create destination directory
-    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    # Create destination directory if needed (handling the case where dirname is empty)
+    dir_name = os.path.dirname(destination)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
     
     # Install gdown if not already installed
     try:
@@ -116,7 +118,7 @@ def download_models():
         },
         'latents': {
             'id': '1x5PnIu-pqeImqTE1rhY3iSMO3LCwBzid',
-            'path': 'latents.zip',
+            'path': './latents.zip',  # Added ./ to ensure there's a directory component
             'is_zip': True,
             'extract_to': 'latents'
         }
