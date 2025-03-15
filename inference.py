@@ -30,7 +30,7 @@ def parse_arguments():
     # Optional arguments
     parser.add_argument('--output', type=str, default='outputs/inference', 
                         help='Directory to save the generated child image')
-    parser.add_argument('--model', type=str, default='family_models/latest_model.pt',
+    parser.add_argument('--model', type=str, default='family_models/best_model.pt',
                         help='Path to the trained model weights')
     parser.add_argument('--uniform-weights', action='store_true', 
                         help='Use uniform 50/50 weights instead of model weights')

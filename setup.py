@@ -7,6 +7,7 @@ from tqdm import tqdm
 import gdown  # For Google Drive folder download
 import zipfile  # For extracting zip files
 import shutil  # For directory operations
+import argparse
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -609,7 +610,48 @@ def download_aligned_test2():
         os.makedirs(target_dir, exist_ok=True)
         return False
 
+def download_best_model():
+    """Download and extract the best model from Google Drive."""
+    logger.info("Downloading best model...")
+    
+    # Create the family_models directory if it doesn't exist
+    os.makedirs('family_models', exist_ok=True)
+    
+    # Google Drive file ID for the best model zip
+    model_id = '1oGo_8ly2Jyxob3RTsF97tf5OFfaTINgu'
+    zip_path = 'family_models/best_model.zip'
+    model_path = 'family_models/best_model.pt'
+    
+    # Download the zip file
+    try:
+        download_gdrive_file(model_id, zip_path, "Downloading best model")
+        
+        # Extract the zip file
+        logger.info("Extracting best model...")
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall('family_models')
+        
+        # Clean up the zip file
+        os.remove(zip_path)
+        
+        if os.path.exists(model_path):
+            logger.info(f"Successfully downloaded and extracted best model to {model_path}")
+            return True
+        else:
+            logger.error("Model file not found after extraction")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error downloading or extracting best model: {str(e)}")
+        return False
+
 def main():
+    # Add argument parsing
+    parser = argparse.ArgumentParser(description='Setup script for the project')
+    parser.add_argument('--download-best-model', action='store_true',
+                        help='Download the best model from Google Drive')
+    args = parser.parse_args()
+    
     logger.info("Starting setup...")
     
     # Set the working directory first
@@ -631,6 +673,17 @@ def main():
     # Download model files and pre-computed data
     download_models()
     
+    # Download best model if flag is set
+    if args.download_best_model:
+        best_model_success = download_best_model()
+        if not best_model_success:
+            logger.warning("""
+⚠️ WARNING: The best model could not be downloaded properly.
+You may need to download it manually from:
+https://drive.google.com/file/d/1oGo_8ly2Jyxob3RTsF97tf5OFfaTINgu/view?usp=drive_link
+and place it in the family_models directory as 'best_model.pt'
+""")
+    
     # Update train.py with correct paths
     update_train_py()
     
@@ -645,8 +698,10 @@ Setup complete! The system is ready to go:
 3. All required models have been installed
 4. Directory structure has been created
 5. train.py has been updated with correct paths
-6. Image file verification has been performed
-""")
+6. Image file verification has been performed""")
+    
+    if args.download_best_model:
+        logger.info("7. Best model has been downloaded and extracted")
 
     # Show warning if AlignedTest2 download failed
     if not alignedtest_success:
