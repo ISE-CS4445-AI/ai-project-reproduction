@@ -1,0 +1,172 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Genetic Face Generator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .upload-form {
+            background-color: #f5f5f5;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 30px;
+            width: 100%;
+            max-width: 800px;
+        }
+        .input-group {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        .input-section {
+            width: 48%;
+        }
+        .preview-section {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            max-width: 1000px;
+        }
+        .preview-container {
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            padding: 10px;
+            width: 30%;
+            text-align: center;
+        }
+        .preview-image {
+            max-width: 100%;
+            max-height: 300px;
+            margin-bottom: 10px;
+        }
+        .buttons {
+            margin-top: 20px;
+            text-align: center;
+        }
+        .btn {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .btn:hover {
+            background-color: #45a049;
+        }
+        .file-input {
+            margin-top: 10px;
+            width: 100%;
+        }
+        .options {
+            margin-top: 20px;
+        }
+        .flash-messages {
+            margin-bottom: 20px;
+        }
+        .flash-message {
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        .flash-error {
+            background-color: #ffcccc;
+            color: #cc0000;
+        }
+        .flash-success {
+            background-color: #ccffcc;
+            color: #006600;
+        }
+    </style>
+</head>
+<body>
+    <h1>Genetic Face Generator</h1>
+    
+    <div class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="flash-messages">
+                    {% for category, message in messages %}
+                        <div class="flash-message flash-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+        
+        <div class="upload-form">
+            <form method="POST" enctype="multipart/form-data" action="{{ url_for('upload') }}">
+                <div class="input-group">
+                    <div class="input-section">
+                        <h3>Parent 1</h3>
+                        <input type="file" name="parent1" class="file-input" accept="image/*" required>
+                        {% if parent1_img %}
+                            <img src="data:image/png;base64,{{ parent1_img }}" class="preview-image">
+                        {% endif %}
+                    </div>
+                    
+                    <div class="input-section">
+                        <h3>Parent 2</h3>
+                        <input type="file" name="parent2" class="file-input" accept="image/*" required>
+                        {% if parent2_img %}
+                            <img src="data:image/png;base64,{{ parent2_img }}" class="preview-image">
+                        {% endif %}
+                    </div>
+                </div>
+                
+                <div class="options">
+                    <h3>Options</h3>
+                    <label>
+                        <input type="checkbox" name="uniform_weights" {% if uniform_weights %}checked{% endif %}>
+                        Use uniform 50/50 weights (simpler blend)
+                    </label>
+                    <br>
+                    <label>
+                        <input type="checkbox" name="make_younger" {% if make_younger %}checked{% endif %}>
+                        Make the child look younger
+                    </label>
+                </div>
+                
+                <div class="buttons">
+                    <button type="submit" class="btn">Upload & Generate</button>
+                </div>
+            </form>
+        </div>
+        
+        {% if child_img %}
+            <div class="preview-section">
+                <div class="preview-container">
+                    <h3>Parent 1</h3>
+                    <img src="data:image/png;base64,{{ parent1_img }}" class="preview-image">
+                </div>
+                
+                <div class="preview-container">
+                    <h3>Parent 2</h3>
+                    <img src="data:image/png;base64,{{ parent2_img }}" class="preview-image">
+                </div>
+                
+                <div class="preview-container">
+                    <h3>Generated Child</h3>
+                    <img src="data:image/png;base64,{{ child_img }}" class="preview-image">
+                    <a href="{{ url_for('download_child') }}" class="btn">Download</a>
+                </div>
+            </div>
+        {% endif %}
+    </div>
+</body>
+</html>
+            

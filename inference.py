@@ -8,6 +8,9 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from datetime import datetime
 
+# Add encoder4editing to the Python path
+sys.path.append(os.path.abspath('encoder4editing'))
+
 # Import local modules
 from model import LatentWeightTrainer
 from e4e_lib import E4EProcessor
@@ -23,14 +26,21 @@ def parse_arguments():
     """Parse command line arguments for inference."""
     parser = argparse.ArgumentParser(description='Genetic Face Generation - Inference Script')
     
-    # Required arguments - parent images
-    parser.add_argument('parent1', type=str, help='Path to the first parent image')
-    parser.add_argument('parent2', type=str, help='Path to the second parent image')
+    # Create a mutually exclusive group for the input methods
+    input_group = parser.add_mutually_exclusive_group()
+    
+    # Parent images as positional arguments (normal mode)
+    input_group.add_argument('--parent-images', type=str, nargs=2, metavar=('parent1', 'parent2'),
+                        help='Paths to the two parent images (normal mode)')
+    
+    # Web application mode
+    input_group.add_argument('--webapp', action='store_true', 
+                        help='Run as a web application with UI for uploading images')
     
     # Optional arguments
     parser.add_argument('--output', type=str, default='outputs/inference', 
                         help='Directory to save the generated child image')
-    parser.add_argument('--model', type=str, default='family_models/best_model.pt',
+    parser.add_argument('--model', type=str, default='family_models/content/family_models/best_model.pt',
                         help='Path to the trained model weights')
     parser.add_argument('--uniform-weights', action='store_true', 
                         help='Use uniform 50/50 weights instead of model weights')
@@ -49,18 +59,31 @@ def parse_arguments():
                         help='Apply the young edit to make the output image look younger')
     parser.add_argument('--young-factor', type=float, default=-2.5,
                         help='Factor for the young edit (negative values make younger, positive make older)')
+    parser.add_argument('--port', type=int, default=5000,
+                        help='Port for the web application')
     
     return parser.parse_args()
 
 def check_inputs(args):
     """Validate input arguments."""
+    # Skip validation for webapp mode
+    if args.webapp:
+        return True
+        
     # Check if parent images exist
-    if not os.path.isfile(args.parent1):
-        logger.error(f"Parent image 1 not found: {args.parent1}")
+    if args.parent_images is None:
+        logger.error("No parent images specified. Use --parent-images or --webapp")
+        return False
+        
+    parent1 = args.parent_images[0]
+    parent2 = args.parent_images[1]
+    
+    if not os.path.isfile(parent1):
+        logger.error(f"Parent image 1 not found: {parent1}")
         return False
     
-    if not os.path.isfile(args.parent2):
-        logger.error(f"Parent image 2 not found: {args.parent2}")
+    if not os.path.isfile(parent2):
+        logger.error(f"Parent image 2 not found: {parent2}")
         return False
     
     # Check if model exists when not using uniform weights
@@ -163,18 +186,8 @@ def visualize_weights(weights, save_path=None):
     
     return plt.gcf()
 
-def main():
-    """Main function for inference."""
-    # Parse command line arguments
-    args = parse_arguments()
-    
-    # Validate inputs
-    if not check_inputs(args):
-        sys.exit(1)
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(args.output, exist_ok=True)
-    
+def generate_child(parent1_path, parent2_path, args):
+    """Generate a child image from two parent images."""
     # Determine device
     if args.device:
         device = torch.device(args.device)
@@ -192,11 +205,11 @@ def main():
     )
     
     # Process parent images to get latent codes
-    logger.info(f"Processing parent image 1: {args.parent1}")
-    _, parent1_latent, _ = processor.process_image(args.parent1)
+    logger.info(f"Processing parent image 1: {parent1_path}")
+    _, parent1_latent, _ = processor.process_image(parent1_path)
     
-    logger.info(f"Processing parent image 2: {args.parent2}")
-    _, parent2_latent, _ = processor.process_image(args.parent2)
+    logger.info(f"Processing parent image 2: {parent2_path}")
+    _, parent2_latent, _ = processor.process_image(parent2_path)
     
     # Initialize the LatentWeightTrainer (no need to train, just for inference)
     latent_shape = parent1_latent.shape
@@ -255,8 +268,8 @@ def main():
     child_image = trainer.generate_child_image(parent1_latent, parent2_latent)
     
     # Get parent images as PIL Images
-    parent1_img = Image.open(args.parent1).convert('RGB')
-    parent2_img = Image.open(args.parent2).convert('RGB')
+    parent1_img = Image.open(parent1_path).convert('RGB')
+    parent2_img = Image.open(parent2_path).convert('RGB')
     
     # Apply young edit if requested
     if args.make_younger:
@@ -293,14 +306,324 @@ def main():
         
         logger.info(f"Saved latent codes to {latents_dir}")
     
-    # Visualize results
-    visualization_path = os.path.join(args.output, f"result_{timestamp}.png")
-    fig = visualize_results(parent1_img, parent2_img, child_image, weights, visualization_path)
-    
     # Visualize weights if requested
     if args.visualize_weights:
         weights_path = os.path.join(args.output, f"weights_{timestamp}.png")
         weight_fig = visualize_weights(weights, weights_path)
+    
+    return parent1_img, parent2_img, child_image, child_image_path, weights
+
+def run_webapp(args):
+    """Run the web application for face generation."""
+    from flask import Flask, request, render_template, url_for, redirect, flash, send_from_directory
+    import io
+    import base64
+    
+    # Create the Flask app
+    app = Flask(__name__)
+    app.secret_key = os.urandom(24)
+    
+    # Create upload directory if it doesn't exist
+    upload_dir = os.path.join(args.output, "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    
+    # Create templates directory if it doesn't exist
+    templates_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+    os.makedirs(templates_dir, exist_ok=True)
+    
+    # Create the HTML template if it doesn't exist
+    template_path = os.path.join(templates_dir, "index.html")
+    if not os.path.exists(template_path):
+        with open(template_path, 'w') as f:
+            f.write("""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Genetic Face Generator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .upload-form {
+            background-color: #f5f5f5;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 30px;
+            width: 100%;
+            max-width: 800px;
+        }
+        .input-group {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        .input-section {
+            width: 48%;
+        }
+        .preview-section {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            max-width: 1000px;
+        }
+        .preview-container {
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            padding: 10px;
+            width: 30%;
+            text-align: center;
+        }
+        .preview-image {
+            max-width: 100%;
+            max-height: 300px;
+            margin-bottom: 10px;
+        }
+        .buttons {
+            margin-top: 20px;
+            text-align: center;
+        }
+        .btn {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .btn:hover {
+            background-color: #45a049;
+        }
+        .file-input {
+            margin-top: 10px;
+            width: 100%;
+        }
+        .options {
+            margin-top: 20px;
+        }
+        .flash-messages {
+            margin-bottom: 20px;
+        }
+        .flash-message {
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        .flash-error {
+            background-color: #ffcccc;
+            color: #cc0000;
+        }
+        .flash-success {
+            background-color: #ccffcc;
+            color: #006600;
+        }
+    </style>
+</head>
+<body>
+    <h1>Genetic Face Generator</h1>
+    
+    <div class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="flash-messages">
+                    {% for category, message in messages %}
+                        <div class="flash-message flash-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+        
+        <div class="upload-form">
+            <form method="POST" enctype="multipart/form-data" action="{{ url_for('upload') }}">
+                <div class="input-group">
+                    <div class="input-section">
+                        <h3>Parent 1</h3>
+                        <input type="file" name="parent1" class="file-input" accept="image/*" required>
+                        {% if parent1_img %}
+                            <img src="data:image/png;base64,{{ parent1_img }}" class="preview-image">
+                        {% endif %}
+                    </div>
+                    
+                    <div class="input-section">
+                        <h3>Parent 2</h3>
+                        <input type="file" name="parent2" class="file-input" accept="image/*" required>
+                        {% if parent2_img %}
+                            <img src="data:image/png;base64,{{ parent2_img }}" class="preview-image">
+                        {% endif %}
+                    </div>
+                </div>
+                
+                <div class="options">
+                    <h3>Options</h3>
+                    <label>
+                        <input type="checkbox" name="uniform_weights" {% if uniform_weights %}checked{% endif %}>
+                        Use uniform 50/50 weights (simpler blend)
+                    </label>
+                    <br>
+                    <label>
+                        <input type="checkbox" name="make_younger" {% if make_younger %}checked{% endif %}>
+                        Make the child look younger
+                    </label>
+                </div>
+                
+                <div class="buttons">
+                    <button type="submit" class="btn">Upload & Generate</button>
+                </div>
+            </form>
+        </div>
+        
+        {% if child_img %}
+            <div class="preview-section">
+                <div class="preview-container">
+                    <h3>Parent 1</h3>
+                    <img src="data:image/png;base64,{{ parent1_img }}" class="preview-image">
+                </div>
+                
+                <div class="preview-container">
+                    <h3>Parent 2</h3>
+                    <img src="data:image/png;base64,{{ parent2_img }}" class="preview-image">
+                </div>
+                
+                <div class="preview-container">
+                    <h3>Generated Child</h3>
+                    <img src="data:image/png;base64,{{ child_img }}" class="preview-image">
+                    <a href="{{ url_for('download_child') }}" class="btn">Download</a>
+                </div>
+            </div>
+        {% endif %}
+    </div>
+</body>
+</html>
+            """)
+    
+    # Store the current child image path for download
+    current_child_path = [None]
+    
+    @app.route('/')
+    def index():
+        """Render the main page."""
+        return render_template('index.html')
+    
+    @app.route('/upload', methods=['POST'])
+    def upload():
+        """Handle image uploads and generation."""
+        try:
+            # Check if files were provided
+            if 'parent1' not in request.files or 'parent2' not in request.files:
+                flash('Both parent images are required', 'error')
+                return redirect(url_for('index'))
+            
+            parent1_file = request.files['parent1']
+            parent2_file = request.files['parent2']
+            
+            # Check if files are valid
+            if parent1_file.filename == '' or parent2_file.filename == '':
+                flash('Both parent images are required', 'error')
+                return redirect(url_for('index'))
+            
+            # Get form options
+            uniform_weights = 'uniform_weights' in request.form
+            make_younger = 'make_younger' in request.form
+            
+            # Save uploaded files temporarily
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            parent1_path = os.path.join(upload_dir, f"parent1_{timestamp}.png")
+            parent2_path = os.path.join(upload_dir, f"parent2_{timestamp}.png")
+            
+            parent1_file.save(parent1_path)
+            parent2_file.save(parent2_path)
+            
+            # Set options in args
+            args.uniform_weights = uniform_weights
+            args.make_younger = make_younger
+            
+            # Generate child
+            parent1_img, parent2_img, child_img, child_path, _ = generate_child(parent1_path, parent2_path, args)
+            
+            # Convert images to base64 for display
+            def img_to_base64(img):
+                buffered = io.BytesIO()
+                img.save(buffered, format="PNG")
+                return base64.b64encode(buffered.getvalue()).decode('utf-8')
+            
+            parent1_b64 = img_to_base64(parent1_img)
+            parent2_b64 = img_to_base64(parent2_img)
+            child_b64 = img_to_base64(child_img)
+            
+            # Store current child path for download
+            current_child_path[0] = child_path
+            
+            # Render template with images
+            return render_template('index.html', 
+                                 parent1_img=parent1_b64, 
+                                 parent2_img=parent2_b64, 
+                                 child_img=child_b64,
+                                 uniform_weights=uniform_weights,
+                                 make_younger=make_younger)
+        
+        except Exception as e:
+            logger.error(f"Error in upload: {e}")
+            flash(f'Error generating child: {str(e)}', 'error')
+            return redirect(url_for('index'))
+    
+    @app.route('/download')
+    def download_child():
+        """Download the generated child image."""
+        if current_child_path[0] is None:
+            flash('No child image generated yet', 'error')
+            return redirect(url_for('index'))
+        
+        directory = os.path.dirname(current_child_path[0])
+        filename = os.path.basename(current_child_path[0])
+        return send_from_directory(directory, filename, as_attachment=True)
+    
+    # Run the Flask app
+    logger.info(f"Starting webapp on port {args.port}. Open http://localhost:{args.port} in your browser.")
+    app.run(host='0.0.0.0', port=args.port, debug=False)
+
+def main():
+    """Main function for inference."""
+    # Parse command line arguments
+    args = parse_arguments()
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(args.output, exist_ok=True)
+    
+    # Run webapp if requested
+    if args.webapp:
+        logger.info("Starting web application mode")
+        run_webapp(args)
+        return
+    
+    # Validate inputs for normal mode
+    if not check_inputs(args):
+        sys.exit(1)
+    
+    # In normal mode, extract parent image paths
+    parent1_path = args.parent_images[0]
+    parent2_path = args.parent_images[1]
+    
+    # Generate child
+    parent1_img, parent2_img, child_img, child_path, weights = generate_child(
+        parent1_path, parent2_path, args
+    )
+    
+    # Visualize results
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    visualization_path = os.path.join(args.output, f"result_{timestamp}.png")
+    fig = visualize_results(parent1_img, parent2_img, child_img, weights, visualization_path)
     
     # Display images if requested
     if args.display:
