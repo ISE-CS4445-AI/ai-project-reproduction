@@ -5,6 +5,7 @@ import sys
 import requests
 from tqdm import tqdm
 import gdown  # For Google Drive folder download
+import zipfile  # For extracting zip files
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -47,26 +48,18 @@ def download_gdrive_file(file_id, destination, description=None):
     
     logger.info(f"Successfully downloaded {desc} to {destination}")
 
-def download_gdrive_folder(folder_id, destination_dir):
-    """Download an entire folder from Google Drive."""
-    logger.info(f"Downloading Google Drive folder to {destination_dir}...")
+def extract_zip(zip_path, extract_to):
+    """Extract a zip file to the specified directory."""
+    logger.info(f"Extracting {zip_path} to {extract_to}...")
     
-    # Install gdown if not already installed
-    try:
-        import gdown
-    except ImportError:
-        logger.info("Installing gdown for Google Drive folder download...")
-        run_command('pip install gdown', "Installing gdown")
-        import gdown
+    # Create extraction directory if it doesn't exist
+    os.makedirs(extract_to, exist_ok=True)
     
-    # Create destination directory
-    os.makedirs(destination_dir, exist_ok=True)
+    # Extract the zip file
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(extract_to)
     
-    # Download the folder
-    url = f"https://drive.google.com/drive/folders/{folder_id}"
-    gdown.download_folder(url=url, output=destination_dir, quiet=False)
-    
-    logger.info(f"Successfully downloaded folder to {destination_dir}")
+    logger.info(f"Successfully extracted {zip_path}")
 
 def run_command(command, description=None):
     """Run a shell command with logging."""
@@ -116,15 +109,16 @@ def download_models():
     
     # Pre-computed data from Google Drive
     precomputed_data = {
-        'latents_folder': {
-            'id': '1heLmPFZUA52YEQvSCavNZM5OHG4e0SCF',
-            'path': 'latents',
-            'is_folder': True
-        },
         'child_embeddings': {
             'id': '1b6LFeOdt58DbWY72BAR_smMU-zzQ8mb9',
             'path': 'embeddings/child_embeddings.pt',
-            'is_folder': False
+            'is_zip': False
+        },
+        'latents': {
+            'id': '1x5PnIu-pqeImqTE1rhY3iSMO3LCwBzid',
+            'path': 'latents.zip',
+            'is_zip': True,
+            'extract_to': 'latents'
         }
     }
     
@@ -141,11 +135,23 @@ def download_models():
     
     # Download pre-computed data
     for data_name, data_info in precomputed_data.items():
-        if data_info['is_folder']:
-            logger.info(f"Downloading pre-computed {data_name}...")
-            if not os.listdir(data_info['path']) if os.path.exists(data_info['path']) else True:
-                download_gdrive_folder(data_info['id'], data_info['path'])
+        if data_info['is_zip']:
+            # For zip files, check if the extraction directory already has files
+            extract_dir = data_info.get('extract_to', os.path.dirname(data_info['path']))
+            if os.path.exists(extract_dir) and os.listdir(extract_dir):
+                logger.info(f"{extract_dir} directory already contains files, skipping download of {data_name}.")
+            else:
+                # Download and extract the zip file
+                logger.info(f"Downloading pre-computed {data_name}...")
+                download_gdrive_file(data_info['id'], data_info['path'], f"Downloading {data_name}")
+                
+                # Extract the zip file
+                extract_zip(data_info['path'], extract_dir)
+                
+                # Clean up the zip file
+                os.remove(data_info['path'])
         else:
+            # For non-zip files, simply download if they don't exist
             if not os.path.exists(data_info['path']):
                 logger.info(f"Downloading pre-computed {data_name}...")
                 download_gdrive_file(data_info['id'], data_info['path'], f"Downloading {data_name}")
@@ -192,7 +198,7 @@ def main():
     
     logger.info("""
 Setup complete! The system is ready to go:
-1. Pre-computed latents and embeddings have been downloaded
+1. Pre-computed latents and child embeddings have been downloaded
 2. All required models have been installed
 3. Directory structure has been created
 
