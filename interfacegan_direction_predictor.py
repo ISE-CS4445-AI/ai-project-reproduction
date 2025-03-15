@@ -146,9 +146,13 @@ class InterfaceGANTrainer:
                         factor_value = factors[b, i].item()  # Convert to Python scalar
                         
                         try:
-                            # Apply the edit with the scalar factor
+                            # Apply the edit with the scalar factor and get the edited latent
+                            # Use return_latent=True to get the latent code instead of an image
                             edited_latent = self.processor.editor.apply_interfacegan(
-                                edited_latent, direction_name, factor=factor_value
+                                edited_latent, 
+                                direction_name, 
+                                factor=factor_value,
+                                return_latent=True  # Return latent code instead of image
                             )
                         except Exception as e:
                             print(f"Error applying edit {direction_name} with factor {factor_value}: {e}")

@@ -868,7 +868,7 @@ class E4EEditor:
             self.interfacegan_directions = {}
             return {}
     
-    def apply_interfacegan(self, latent, direction_name, factor=1.0):
+    def apply_interfacegan(self, latent, direction_name, factor=1.0, return_latent=False):
         """
         Apply an InterFaceGAN direction to a latent code.
         
@@ -876,9 +876,10 @@ class E4EEditor:
             latent (torch.Tensor): Latent code
             direction_name (str): Name of the direction to apply
             factor (float): Strength of the edit
+            return_latent (bool): If True, return the edited latent code instead of generating an image
             
         Returns:
-            PIL.Image: Edited image
+            PIL.Image or torch.Tensor: Edited image or edited latent code, depending on return_latent
         """
         logger = logging.getLogger(__name__)
         
@@ -924,6 +925,13 @@ class E4EEditor:
                 # Apply edit
                 edit_latents = latent + direction_tensor * factor
                 
+                # If we only need the latent, return it directly
+                if return_latent:
+                    # Move result back to original device if needed
+                    if edit_latents.device != original_device:
+                        edit_latents = edit_latents.to(original_device)
+                    return edit_latents
+                
                 # Make sure editor generator is entirely on the GPU
                 if hasattr(self.editor, 'generator'):
                     logger.info("Moving editor generator to CUDA...")
@@ -967,6 +975,16 @@ class E4EEditor:
                 return result_image
             else:
                 # Standard approach
+                # Apply edit directly for consistent latent handling
+                edit_latents = latent + direction_tensor * factor
+                
+                # If we only need the latent, return it directly
+                if return_latent:
+                    # Move result back to original device if needed
+                    if edit_latents.device != original_device:
+                        edit_latents = edit_latents.to(original_device)
+                    return edit_latents
+                
                 # Make sure editor generator is entirely on the GPU
                 if hasattr(self.editor, 'generator'):
                     logger.info("Moving editor generator to CUDA...")
@@ -1002,6 +1020,13 @@ class E4EEditor:
                 
                 # Apply the edit directly
                 edit_latents = latent + direction_tensor * factor
+                
+                # If we only need the latent, return it directly
+                if return_latent:
+                    # Move result back to original device if needed
+                    if edit_latents.device != original_device:
+                        edit_latents = edit_latents.to(original_device)
+                    return edit_latents
                 
                 # Run generation with minimal memory usage
                 with torch.no_grad():
