@@ -8,6 +8,26 @@ import pandas as pd
 import random
 from sklearn.model_selection import train_test_split
 import torch
+import logging
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+from visualization_utils import (
+    plot_training_history,
+    visualize_family_generation,
+    plot_weight_analysis,
+    analyze_weights_across_samples,
+    plot_layer_weights
+)
+
+from data_loader import FamilyDataLoader
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Define utility functions
 def get_image_from_path(image_path):
@@ -274,3 +294,176 @@ if len(test_indices) > 0:
     generated_child_image.save(os.path.join(OUTPUT_DIR, "generated_child.png"))
 else:
     print("No valid test families available for visualization")
+
+class TrainingManager:
+    def __init__(self, config):
+        self.config = config
+        self.setup_directories()
+        self.initialize_processor()
+        self.initialize_trainer()
+        self.initialize_data_loader()
+        
+    def setup_directories(self):
+        """Create necessary directories."""
+        os.makedirs(self.config['output_dir'], exist_ok=True)
+        os.makedirs(self.config['model_dir'], exist_ok=True)
+        os.makedirs(self.config['embeddings_dir'], exist_ok=True)
+        
+    def initialize_processor(self):
+        """Initialize the E4E processor."""
+        logger.info("Initializing E4E processor...")
+        self.processor = E4EProcessor(
+            experiment_type='ffhq_encode',
+            memory_efficient=False
+        )
+        
+    def initialize_trainer(self):
+        """Initialize the LatentWeightTrainer."""
+        logger.info("Initializing trainer...")
+        self.trainer = LatentWeightTrainer(
+            processor=self.processor,
+            latent_shape=(18, 512),
+            learning_rate=self.config['learning_rate'],
+            save_dir=self.config['model_dir']
+        )
+        
+        # Set up learning rate scheduler if specified
+        if self.config.get('use_scheduler', False):
+            from torch.optim.lr_scheduler import ReduceLROnPlateau
+            self.trainer.scheduler = ReduceLROnPlateau(
+                self.trainer.optimizer,
+                mode='min',
+                patience=15,
+                factor=0.5,
+                min_lr=1e-7,
+                verbose=True
+            )
+            
+    def initialize_data_loader(self):
+        """Initialize the family data loader."""
+        logger.info("Initializing data loader...")
+        self.data_loader = FamilyDataLoader(
+            base_path=self.config['base_path'],
+            csv_path=self.config['csv_path']
+        )
+    
+    def load_data(self):
+        """Load and prepare all necessary data."""
+        logger.info("Loading family data...")
+        
+        # Load family images
+        self.father_images, self.mother_images, self.child_images = \
+            self.data_loader.load_all_families()
+            
+        # Load pre-computed latents
+        self.father_latents, self.mother_latents = \
+            self.data_loader.load_latents(self.config['latent_dir'])
+            
+        # Create train-test split
+        indices = np.arange(len(self.father_latents))
+        train_indices, test_indices = train_test_split(
+            indices, test_size=0.2, random_state=42
+        )
+        
+        # Filter valid indices
+        valid_indices = [i for i in range(len(self.father_latents))
+                        if self.father_latents[i] is not None 
+                        and self.mother_latents[i] is not None]
+        
+        self.train_indices = [i for i in train_indices if i in valid_indices]
+        self.test_indices = [i for i in test_indices if i in valid_indices]
+        
+        logger.info(f"Training on {len(self.train_indices)} families, "
+                   f"testing on {len(self.test_indices)} families")
+        
+        return self.train_indices, self.test_indices
+    
+    def train(self):
+        """Main training loop."""
+        # Load all data
+        train_indices, test_indices = self.load_data()
+        
+        # Train the model
+        logger.info("Starting training...")
+        model, history = self.trainer.train(
+            father_latents=self.father_latents,
+            mother_latents=self.mother_latents,
+            child_images=self.child_images,
+            train_indices=train_indices,
+            test_indices=test_indices,
+            num_epochs=self.config['num_epochs'],
+            batch_size=self.config['batch_size'],
+            embeddings_save_path=os.path.join(
+                self.config['embeddings_dir'], 'child_embeddings.pt'
+            ),
+            load_embeddings_from=os.path.join(
+                self.config['embeddings_dir'], 'child_embeddings.pt'
+            ) if os.path.exists(os.path.join(
+                self.config['embeddings_dir'], 'child_embeddings.pt'
+            )) else None
+        )
+        
+        # Plot training history
+        plot_training_history(
+            history['train_losses'],
+            history['val_losses'],
+            save_dir=self.config['output_dir']
+        )
+        
+        return model, history
+    
+    def generate_sample(self, father_idx, mother_idx, child_idx=None):
+        """Generate a sample child image."""
+        father_latent = self.father_latents[father_idx]
+        mother_latent = self.mother_latents[mother_idx]
+        
+        # Generate child image
+        generated_child = self.trainer.generate_child_image(
+            father_latent, mother_latent
+        )
+        
+        # Visualize the result
+        actual_child = None
+        if child_idx is not None:
+            actual_child = self.child_images[child_idx]
+            
+        visualize_family_generation(
+            self.father_images[father_idx],
+            self.mother_images[mother_idx],
+            generated_child,
+            actual_child,
+            save_path=os.path.join(
+                self.config['output_dir'],
+                f'family_generation_{father_idx}_{mother_idx}.png'
+            )
+        )
+        
+        return generated_child
+
+def main():
+    # Configuration
+    config = {
+        'output_dir': 'outputs',
+        'model_dir': 'family_models',
+        'embeddings_dir': 'embeddings',
+        'base_path': '/path/to/images',  # Update with your image directory
+        'csv_path': '/path/to/family_data.csv',  # Update with your CSV file
+        'latent_dir': '/path/to/latents',  # Update with your latents directory
+        'learning_rate': 0.00001,
+        'num_epochs': 80,
+        'batch_size': 4,
+        'use_scheduler': True
+    }
+    
+    # Initialize training manager
+    manager = TrainingManager(config)
+    
+    # Train the model
+    model, history = manager.train()
+    
+    # Generate some samples
+    for idx in range(3):
+        manager.generate_sample(idx, idx)
+
+if __name__ == "__main__":
+    main()
