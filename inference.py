@@ -45,6 +45,10 @@ def parse_arguments():
                         help='Visualize the weights used for blending')
     parser.add_argument('--display', action='store_true',
                         help='Display the generated image')
+    parser.add_argument('--make-younger', action='store_true',
+                        help='Apply the young edit to make the output image look younger')
+    parser.add_argument('--young-factor', type=float, default=-2.5,
+                        help='Factor for the young edit (negative values make younger, positive make older)')
     
     return parser.parse_args()
 
@@ -253,6 +257,23 @@ def main():
     # Get parent images as PIL Images
     parent1_img = Image.open(args.parent1).convert('RGB')
     parent2_img = Image.open(args.parent2).convert('RGB')
+    
+    # Apply young edit if requested
+    if args.make_younger:
+        logger.info(f"Applying young edit with factor {args.young_factor}...")
+        try:
+            # Use the editor component of the processor with 'age' direction
+            edited_image = processor.editor.apply_interfacegan(
+                child_latent,
+                direction_name='age',  # Use 'age' instead of 'young'
+                factor=args.young_factor  # Negative factor makes the image younger
+            )
+            child_image = edited_image
+            logger.info("Young edit applied successfully")
+        except Exception as e:
+            logger.error(f"Error applying young edit: {e}")
+            logger.warning("Proceeding with original image")
+            logger.info("Available directions: age, smile, pose")
     
     # Save the child image
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
