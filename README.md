@@ -1,5 +1,7 @@
 # Child Face Generator
 
+OPEN IN COLAB : -- https://colab.research.google.com/drive/1DFE3vQgQnze0vkGDwKSRA6QFlpNaBHh9?usp=sharing
+
 This project uses StyleGAN and encoder4editing to generate child faces from parent faces using a learned weighting model.
 
 ## Setup
